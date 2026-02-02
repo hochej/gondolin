@@ -17,6 +17,7 @@ QEMU ?= qemu-system-x86_64
 QEMU_MEMORY ?= 256M
 QEMU_SMP ?= 1
 QEMU_SERIAL ?= stdio
+QEMU_WAIT ?= on
 VIRTIO_SOCK ?= $(IMAGE_OUT)/virtio.sock
 
 build:
@@ -64,8 +65,8 @@ qemu: image kernel
 		-append "console=ttyS0" \
 		-nographic \
 		-serial $(QEMU_SERIAL) \
-		-chardev socket,id=virtiocon0,path=$(VIRTIO_SOCK),server=on,wait=off \
-		-device virtio-serial \
+		-chardev socket,id=virtiocon0,path=$(VIRTIO_SOCK),server=on,wait=$(QEMU_WAIT) \
+		-device virtio-serial-pci \
 		-device virtserialport,chardev=virtiocon0,name=virtio-port
 
 test:

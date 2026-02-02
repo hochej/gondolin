@@ -1,13 +1,30 @@
 #!/bin/sh
 set -eu
 
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc || echo "[init] mount proc failed" > /dev/console
+mount -t sysfs sysfs /sys || echo "[init] mount sysfs failed" > /dev/console
+mount -t devtmpfs devtmpfs /dev || echo "[init] mount devtmpfs failed" > /dev/console
 
 mkdir -p /dev/pts /dev/shm /run
-mount -t devpts devpts /dev/pts
-mount -t tmpfs tmpfs /run
+mount -t devpts devpts /dev/pts || echo "[init] mount devpts failed" > /dev/console
+mount -t tmpfs tmpfs /run || echo "[init] mount tmpfs failed" > /dev/console
+
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+echo "[init] /dev entries:" > /dev/console
+ls -l /dev > /dev/console 2>&1
+if [ -d /dev/virtio-ports ]; then
+  echo "[init] /dev/virtio-ports:" > /dev/console
+  ls -l /dev/virtio-ports > /dev/console 2>&1
+else
+  echo "[init] /dev/virtio-ports missing" > /dev/console
+fi
+if [ -d /sys/class/virtio-ports ]; then
+  echo "[init] /sys/class/virtio-ports:" > /dev/console
+  ls -l /sys/class/virtio-ports > /dev/console 2>&1
+else
+  echo "[init] /sys/class/virtio-ports missing" > /dev/console
+fi
 
 echo "[init] starting sandboxd" > /dev/console
 
