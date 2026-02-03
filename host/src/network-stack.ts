@@ -206,6 +206,7 @@ export class NetworkStack extends EventEmitter {
     const header = Buffer.alloc(4);
     header.writeUInt32BE(frame.length, 0);
 
+    // XXX: cap txBuffer growth or drop frames when QEMU isn't draining.
     this.txBuffer = Buffer.concat([this.txBuffer, header, frame]);
 
     this.emit("network-activity");
@@ -223,6 +224,7 @@ export class NetworkStack extends EventEmitter {
     const header = Buffer.alloc(4);
     header.writeUInt32BE(frame.length, 0);
 
+    // XXX: cap txBuffer growth or drop frames when QEMU isn't draining.
     this.txBuffer = Buffer.concat([this.txBuffer, header, frame]);
 
     this.emit("network-activity");

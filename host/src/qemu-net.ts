@@ -248,6 +248,7 @@ export class QemuNetworkBackend extends EventEmitter {
             };
           }
         }
+        // XXX: enforce SandboxPolicy allow/deny rules for HTTP/TLS flows here.
         return true;
       },
     });
@@ -298,6 +299,7 @@ export class QemuNetworkBackend extends EventEmitter {
   }
 
   private handleUdpSend(message: UdpSendMessage) {
+    // XXX: apply SandboxPolicy allow/deny rules for DNS/UDP destinations here.
     if (message.dstPort !== 53) {
       if (this.options.debug) {
         this.emit("log", `[net] udp blocked ${message.srcIP}:${message.srcPort} -> ${message.dstIP}:${message.dstPort}`);
@@ -615,6 +617,7 @@ export class QemuNetworkBackend extends EventEmitter {
     const bodyOffset = headerEnd + 4;
     const bodyBuffer = buffer.subarray(bodyOffset);
 
+    // XXX: cap request body size to avoid unbounded buffering (Content-Length/chunked).
     const transferEncoding = headers["transfer-encoding"]?.toLowerCase();
     if (transferEncoding === "chunked") {
       const chunked = this.decodeChunkedBody(bodyBuffer);
@@ -651,6 +654,7 @@ export class QemuNetworkBackend extends EventEmitter {
   private decodeChunkedBody(buffer: Buffer): { complete: boolean; body: Buffer; bytesConsumed: number } {
     let offset = 0;
     const chunks: Buffer[] = [];
+    // XXX: enforce a max chunked body size while accumulating chunks.
 
     while (true) {
       const lineEnd = buffer.indexOf("\r\n", offset);
@@ -690,6 +694,7 @@ export class QemuNetworkBackend extends EventEmitter {
       return;
     }
 
+    // XXX: validate URL + DNS/IP to block localhost/private ranges before fetch().
     if (this.options.debug) {
       this.emit("log", `[net] http bridge ${request.method} ${url}`);
     }
