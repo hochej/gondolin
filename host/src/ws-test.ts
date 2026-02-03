@@ -8,6 +8,7 @@ const timeoutMs = Number(process.env.WS_TIMEOUT ?? 5000);
 async function run() {
   const ws = new WebSocket(url);
   let output = "";
+  let stderr = "";
 
   const done = new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -19,8 +20,11 @@ async function run() {
         JSON.stringify({
           type: "exec",
           id: 1,
-          cmd: "echo",
-          argv: ["hello"],
+          cmd: "python3",
+          argv: [
+            "-c",
+            "import os,sys; entries=os.listdir('/'); print(sys.version.splitlines()[0]); print('ROOTFS'); print(entries);",
+          ],
         })
       );
     });
@@ -30,6 +34,8 @@ async function run() {
         const frame = decodeOutputFrame(Buffer.from(data as Buffer));
         if (frame.stream === "stdout") {
           output += frame.data.toString();
+        } else if (frame.stream === "stderr") {
+          stderr += frame.data.toString();
         }
         return;
       }
@@ -37,12 +43,23 @@ async function run() {
       const message = JSON.parse(data.toString()) as { type: string; exit_code?: number };
       if (message.type === "exec_response") {
         clearTimeout(timer);
-        if (output.trim() !== "hello") {
-          reject(new Error(`unexpected output: ${output.trim()}`));
+        if (message.exit_code !== 0) {
+          const detail = stderr.trim() ? `\n${stderr.trim()}` : "";
+          reject(new Error(`unexpected exit code: ${message.exit_code}${detail}`));
           return;
         }
-        if (message.exit_code !== 0) {
-          reject(new Error(`unexpected exit code: ${message.exit_code}`));
+        const lines = output.trim().split("\n");
+        const versionLine = lines[0] ?? "";
+        if (!/^\d+\.\d+\.\d+/.test(versionLine)) {
+          const detail = stderr.trim() ? `\n${stderr.trim()}` : "";
+          reject(new Error(`unexpected output: ${output.trim()}${detail}`));
+          return;
+        }
+        const rootfsIndex = lines.findIndex((line) => line.trim() === "ROOTFS");
+        const rootfsListing = lines.slice(rootfsIndex + 1).filter((line) => line.trim().length > 0);
+        if (rootfsIndex === -1 || rootfsListing.length === 0) {
+          const detail = stderr.trim() ? `\n${stderr.trim()}` : "";
+          reject(new Error(`missing rootfs output: ${output.trim()}${detail}`));
           return;
         }
         resolve();
@@ -58,6 +75,7 @@ async function run() {
   await done;
   ws.close();
   console.log("WS test passed");
+  console.log(output);
 }
 
 run().catch((err) => {
