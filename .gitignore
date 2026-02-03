@@ -9,3 +9,4 @@ guest/image/out/
 guest/image/.cache/
 host/node_modules/
 host/dist/
+host/var/

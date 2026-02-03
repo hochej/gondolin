@@ -29,7 +29,7 @@ SANDBOXD_BIN=${SANDBOXD_BIN:-"${GUEST_DIR}/zig-out/bin/sandboxd"}
 
 ALPINE_TARBALL="alpine-minirootfs-${ALPINE_VERSION}-${ARCH}.tar.gz"
 ALPINE_URL=${ALPINE_URL:-"https://dl-cdn.alpinelinux.org/alpine/${ALPINE_BRANCH}/releases/${ARCH}/${ALPINE_TARBALL}"}
-EXTRA_PACKAGES=${EXTRA_PACKAGES:-python3 linux-virt rng-tools bash}
+EXTRA_PACKAGES=${EXTRA_PACKAGES:-python3 linux-virt rng-tools bash ca-certificates}
 
 require_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -180,6 +180,15 @@ fi
 
 install -m 0755 "${SANDBOXD_BIN}" "${ROOTFS_DIR}/usr/bin/sandboxd"
 install -m 0755 "${IMAGE_DIR}/init" "${ROOTFS_DIR}/init"
+
+if [[ -n "${MITM_CA_CERT:-}" && -f "${MITM_CA_CERT}" ]]; then
+    install -d "${ROOTFS_DIR}/usr/local/share/ca-certificates"
+    install -m 0644 "${MITM_CA_CERT}" "${ROOTFS_DIR}/usr/local/share/ca-certificates/eregion-mitm-ca.crt"
+
+    if [[ -f "${ROOTFS_DIR}/etc/ssl/certs/ca-certificates.crt" ]]; then
+        cat "${MITM_CA_CERT}" >> "${ROOTFS_DIR}/etc/ssl/certs/ca-certificates.crt"
+    fi
+fi
 
 mkdir -p "${ROOTFS_DIR}/proc" "${ROOTFS_DIR}/sys" "${ROOTFS_DIR}/dev" "${ROOTFS_DIR}/run"
 

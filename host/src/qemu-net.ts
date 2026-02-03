@@ -3,6 +3,10 @@ import net from "net";
 import fs from "fs";
 import path from "path";
 import dgram from "dgram";
+import tls from "tls";
+import crypto from "crypto";
+import { Duplex } from "stream";
+import { execFileSync } from "child_process";
 
 import {
   NetworkStack,
@@ -47,6 +51,31 @@ type HttpSession = {
   closed: boolean;
 };
 
+class GuestTlsStream extends Duplex {
+  constructor(private readonly onEncryptedWrite: (chunk: Buffer) => void) {
+    super();
+  }
+
+  pushEncrypted(data: Buffer) {
+    this.push(data);
+  }
+
+  _read() {
+    // data is pushed via pushEncrypted
+  }
+
+  _write(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void) {
+    this.onEncryptedWrite(Buffer.from(chunk));
+    callback();
+  }
+}
+
+type TlsSession = {
+  stream: GuestTlsStream;
+  socket: tls.TLSSocket;
+  servername: string | null;
+};
+
 type TcpSession = {
   socket: net.Socket | null;
   srcIP: string;
@@ -59,6 +88,7 @@ type TcpSession = {
   connected: boolean;
   pendingWrites: Buffer[];
   http?: HttpSession;
+  tls?: TlsSession;
 };
 
 export type HttpHookRequest = {
@@ -91,6 +121,7 @@ export type QemuNetworkOptions = {
   vmMac?: Buffer;
   debug?: boolean;
   httpHooks?: HttpHooks;
+  mitmCertDir?: string;
 };
 
 export class QemuNetworkBackend extends EventEmitter {
@@ -100,6 +131,9 @@ export class QemuNetworkBackend extends EventEmitter {
   private stack: NetworkStack | null = null;
   private readonly udpSessions = new Map<string, UdpSession>();
   private readonly tcpSessions = new Map<string, TcpSession>();
+  private caCertPath: string | null = null;
+  private caKeyPath: string | null = null;
+  private tlsContexts = new Map<string, tls.SecureContext>();
 
   constructor(private readonly options: QemuNetworkOptions) {
     super();
@@ -305,7 +339,12 @@ export class QemuNetworkBackend extends EventEmitter {
     if (!session) return;
 
     if (session.protocol === "http") {
-      this.handleHttpData(message.key, session, message.data);
+      this.handlePlainHttpData(message.key, session, message.data);
+      return;
+    }
+
+    if (session.protocol === "tls") {
+      this.handleTlsData(message.key, session, message.data);
       return;
     }
 
@@ -321,6 +360,14 @@ export class QemuNetworkBackend extends EventEmitter {
     const session = this.tcpSessions.get(message.key);
     if (session) {
       session.http = undefined;
+      if (session.tls) {
+        if (message.destroy) {
+          session.tls.socket.destroy();
+        } else {
+          session.tls.socket.end();
+        }
+        session.tls = undefined;
+      }
       if (session.socket) {
         if (message.destroy) {
           session.socket.destroy();
@@ -384,7 +431,95 @@ export class QemuNetworkBackend extends EventEmitter {
     });
   }
 
-  private async handleHttpData(key: string, session: TcpSession, data: Buffer) {
+  private ensureTlsSession(key: string, session: TcpSession) {
+    if (session.tls) return session.tls;
+
+    const stream = new GuestTlsStream((chunk) => {
+      this.stack?.handleTcpData({ key, data: chunk });
+      this.flush();
+    });
+
+    const tlsSocket = new tls.TLSSocket(stream, {
+      isServer: true,
+      secureContext: this.getTlsContext(session.dstIP),
+      SNICallback: (servername, callback) => {
+        const sni = servername || session.dstIP;
+        try {
+          const context = this.getTlsContext(sni);
+          if (this.options.debug) {
+            this.emit("log", `[net] tls sni ${sni}`);
+          }
+          callback(null, context);
+        } catch (err) {
+          callback(err as Error);
+        }
+      },
+    });
+
+    tlsSocket.on("data", (data) => {
+      this.handleTlsHttpData(key, session, Buffer.from(data));
+    });
+
+    tlsSocket.on("error", (err) => {
+      this.emit("error", err);
+      this.stack?.handleTcpError({ key });
+    });
+
+    tlsSocket.on("close", () => {
+      this.stack?.handleTcpClosed({ key });
+      this.tcpSessions.delete(key);
+    });
+
+    session.tls = {
+      stream,
+      socket: tlsSocket,
+      servername: null,
+    };
+
+    if (this.options.debug) {
+      this.emit("log", `[net] tls mitm start ${session.dstIP}:${session.dstPort}`);
+    }
+
+    return session.tls;
+  }
+
+  private async handlePlainHttpData(key: string, session: TcpSession, data: Buffer) {
+    await this.handleHttpDataWithWriter(key, session, data, {
+      scheme: "http",
+      write: (chunk) => {
+        this.stack?.handleTcpData({ key, data: chunk });
+      },
+      finish: () => {
+        this.stack?.handleTcpEnd({ key });
+        this.flush();
+      },
+    });
+  }
+
+  private async handleTlsHttpData(key: string, session: TcpSession, data: Buffer) {
+    const tlsSession = session.tls;
+    if (!tlsSession) return;
+
+    await this.handleHttpDataWithWriter(key, session, data, {
+      scheme: "https",
+      write: (chunk) => {
+        tlsSession.socket.write(chunk);
+      },
+      finish: () => {
+        tlsSession.socket.end(() => {
+          this.stack?.handleTcpEnd({ key });
+          this.flush();
+        });
+      },
+    });
+  }
+
+  private async handleHttpDataWithWriter(
+    key: string,
+    session: TcpSession,
+    data: Buffer,
+    options: { scheme: "http" | "https"; write: (chunk: Buffer) => void; finish: () => void }
+  ) {
     const httpSession = session.http ?? {
       buffer: Buffer.alloc(0),
       processing: false,
@@ -404,15 +539,21 @@ export class QemuNetworkBackend extends EventEmitter {
     httpSession.buffer = parsed.remaining;
 
     try {
-      await this.fetchAndRespond(key, parsed.request);
+      await this.fetchAndRespond(parsed.request, options.scheme, options.write);
     } catch (err) {
       this.emit("error", err instanceof Error ? err : new Error(String(err)));
-      this.respondWithError(key, 502, "Bad Gateway");
+      this.respondWithError(options.write, 502, "Bad Gateway");
     } finally {
       httpSession.closed = true;
-      this.stack?.handleTcpEnd({ key });
+      options.finish();
       this.flush();
     }
+  }
+
+  private handleTlsData(key: string, session: TcpSession, data: Buffer) {
+    const tlsSession = this.ensureTlsSession(key, session);
+    if (!tlsSession) return;
+    tlsSession.stream.pushEncrypted(data);
   }
 
   private parseHttpRequest(buffer: Buffer): { request: HttpRequestData; remaining: Buffer } | null {
@@ -508,10 +649,14 @@ export class QemuNetworkBackend extends EventEmitter {
     }
   }
 
-  private async fetchAndRespond(key: string, request: HttpRequestData) {
-    const url = this.buildFetchUrl(request);
+  private async fetchAndRespond(
+    request: HttpRequestData,
+    defaultScheme: "http" | "https",
+    write: (chunk: Buffer) => void
+  ) {
+    const url = this.buildFetchUrl(request, defaultScheme);
     if (!url) {
-      this.respondWithError(key, 400, "Bad Request");
+      this.respondWithError(write, 400, "Bad Request");
       return;
     }
 
@@ -558,26 +703,25 @@ export class QemuNetworkBackend extends EventEmitter {
       if (updated) hookResponse = updated;
     }
 
-    this.sendHttpResponse(key, hookResponse);
+    this.sendHttpResponse(write, hookResponse);
   }
 
-  private sendHttpResponse(key: string, response: HttpHookResponse) {
+  private sendHttpResponse(write: (chunk: Buffer) => void, response: HttpHookResponse) {
     const statusLine = `HTTP/1.1 ${response.status} ${response.statusText}\r\n`;
     const headers = Object.entries(response.headers)
       .map(([name, value]) => `${name}: ${value}`)
       .join("\r\n");
     const headerBlock = `${statusLine}${headers}\r\n\r\n`;
 
-    this.stack?.handleTcpData({ key, data: Buffer.from(headerBlock) });
+    write(Buffer.from(headerBlock));
     if (response.body.length > 0) {
-      this.stack?.handleTcpData({ key, data: response.body });
+      write(response.body);
     }
-    this.flush();
   }
 
-  private respondWithError(key: string, status: number, statusText: string) {
+  private respondWithError(write: (chunk: Buffer) => void, status: number, statusText: string) {
     const body = Buffer.from(`${status} ${statusText}\n`);
-    this.sendHttpResponse(key, {
+    this.sendHttpResponse(write, {
       status,
       statusText,
       headers: {
@@ -589,13 +733,154 @@ export class QemuNetworkBackend extends EventEmitter {
     });
   }
 
-  private buildFetchUrl(request: HttpRequestData) {
+  private buildFetchUrl(request: HttpRequestData, defaultScheme: "http" | "https") {
     if (request.target.startsWith("http://") || request.target.startsWith("https://")) {
       return request.target;
     }
     const host = request.headers["host"];
     if (!host) return null;
-    return `http://${host}${request.target}`;
+    return `${defaultScheme}://${host}${request.target}`;
+  }
+
+  private getMitmDir() {
+    return this.options.mitmCertDir ?? path.join(process.cwd(), "var", "mitm");
+  }
+
+  private ensureCa() {
+    if (this.caCertPath && this.caKeyPath) return;
+
+    const mitmDir = this.getMitmDir();
+    fs.mkdirSync(mitmDir, { recursive: true });
+
+    const caKeyPath = path.join(mitmDir, "ca.key");
+    const caCertPath = path.join(mitmDir, "ca.crt");
+
+    if (!fs.existsSync(caKeyPath) || !fs.existsSync(caCertPath)) {
+      execFileSync("openssl", [
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-sha256",
+        "-days",
+        "3650",
+        "-nodes",
+        "-subj",
+        "/CN=eregion-mitm-ca",
+        "-keyout",
+        caKeyPath,
+        "-out",
+        caCertPath,
+      ]);
+
+      if (this.options.debug) {
+        this.emit("log", `[net] generated mitm CA at ${caCertPath}`);
+      }
+    }
+
+    this.caKeyPath = caKeyPath;
+    this.caCertPath = caCertPath;
+  }
+
+  private getTlsContext(servername: string) {
+    const normalized = servername.trim() || "unknown";
+    const cached = this.tlsContexts.get(normalized);
+    if (cached) return cached;
+
+    this.ensureCa();
+    if (!this.caCertPath || !this.caKeyPath) {
+      throw new Error("MITM CA is not initialized");
+    }
+
+    const { keyPath, certPath } = this.ensureLeafCertificate(normalized);
+    const leafCert = fs.readFileSync(certPath, "utf8");
+    const caCert = fs.readFileSync(this.caCertPath, "utf8");
+
+    const context = tls.createSecureContext({
+      key: fs.readFileSync(keyPath),
+      cert: `${leafCert}\n${caCert}`,
+    });
+
+    this.tlsContexts.set(normalized, context);
+    return context;
+  }
+
+  private ensureLeafCertificate(servername: string) {
+    if (!this.caCertPath || !this.caKeyPath) {
+      throw new Error("MITM CA is not initialized");
+    }
+
+    const hostsDir = path.join(this.getMitmDir(), "hosts");
+    fs.mkdirSync(hostsDir, { recursive: true });
+
+    const hash = crypto.createHash("sha256").update(servername).digest("hex").slice(0, 12);
+    const slug = servername.replace(/[^a-zA-Z0-9.-]/g, "_");
+    const baseName = `${slug || "host"}-${hash}`;
+
+    const keyPath = path.join(hostsDir, `${baseName}.key`);
+    const certPath = path.join(hostsDir, `${baseName}.crt`);
+
+    if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
+      return { keyPath, certPath };
+    }
+
+    const csrPath = path.join(hostsDir, `${baseName}.csr`);
+    const configPath = path.join(hostsDir, `${baseName}.cnf`);
+
+    const safeName = servername.replace(/[\r\n]/g, "");
+    const san = net.isIP(servername) ? `IP:${servername}` : `DNS:${servername}`;
+    const config = [
+      "[req]",
+      "distinguished_name=req_dist",
+      "prompt=no",
+      "req_extensions=v3_req",
+      "[req_dist]",
+      `CN=${safeName}`,
+      "[v3_req]",
+      `subjectAltName=${san}`,
+      "keyUsage=digitalSignature,keyEncipherment",
+      "extendedKeyUsage=serverAuth",
+      "",
+    ].join("\n");
+
+    fs.writeFileSync(configPath, config);
+
+    execFileSync("openssl", ["genrsa", "-out", keyPath, "2048"]);
+    execFileSync("openssl", [
+      "req",
+      "-new",
+      "-key",
+      keyPath,
+      "-out",
+      csrPath,
+      "-config",
+      configPath,
+    ]);
+    execFileSync("openssl", [
+      "x509",
+      "-req",
+      "-in",
+      csrPath,
+      "-CA",
+      this.caCertPath,
+      "-CAkey",
+      this.caKeyPath,
+      "-CAcreateserial",
+      "-out",
+      certPath,
+      "-days",
+      "825",
+      "-sha256",
+      "-extfile",
+      configPath,
+      "-extensions",
+      "v3_req",
+    ]);
+
+    fs.rmSync(csrPath, { force: true });
+    fs.rmSync(configPath, { force: true });
+
+    return { keyPath, certPath };
   }
 
   private stripHopByHopHeaders(headers: Record<string, string>) {

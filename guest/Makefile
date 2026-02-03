@@ -36,6 +36,7 @@ endif
 ALPINE_ARCH ?= $(DEFAULT_ARCH)
 QEMU ?= $(DEFAULT_QEMU)
 QEMU_MACHINE ?=
+MITM_CA_CERT ?= $(abspath $(CURDIR)/../host/var/mitm/ca.crt)
 ifeq ($(ALPINE_ARCH),aarch64)
 QEMU_MACHINE ?= -machine virt
 endif
@@ -56,7 +57,7 @@ run: build
 	./zig-out/bin/sandboxd
 
 image: build
-	ARCH=$(ALPINE_ARCH) $(IMAGE_SCRIPT)
+	ARCH=$(ALPINE_ARCH) MITM_CA_CERT=$(MITM_CA_CERT) $(IMAGE_SCRIPT)
 
 kernel:
 	@set -e; \
