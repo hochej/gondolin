@@ -38,6 +38,22 @@ mount -t tmpfs tmpfs /run || log "[init] mount tmpfs failed"
 
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
+mkdir -p /tmp /var/tmp /var/cache /var/log /root /home
+mount -t tmpfs tmpfs /tmp || log "[init] mount tmpfs /tmp failed"
+mount -t tmpfs tmpfs /root || log "[init] mount tmpfs /root failed"
+mount -t tmpfs tmpfs /var/tmp || log "[init] mount tmpfs /var/tmp failed"
+mount -t tmpfs tmpfs /var/cache || log "[init] mount tmpfs /var/cache failed"
+mount -t tmpfs tmpfs /var/log || log "[init] mount tmpfs /var/log failed"
+
+mkdir -p /tmp/.cache /tmp/.config /tmp/.local/share
+
+export HOME=/root
+export TMPDIR=/tmp
+export XDG_CACHE_HOME=/tmp/.cache
+export XDG_CONFIG_HOME=/tmp/.config
+export XDG_DATA_HOME=/tmp/.local/share
+export UV_CACHE_DIR=/tmp/.cache/uv
+
 log "[init] /dev entries:"
 log_cmd ls -l /dev
 if [ -d /dev/virtio-ports ]; then

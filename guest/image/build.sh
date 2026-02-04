@@ -7,7 +7,7 @@ GUEST_DIR="${REPO_ROOT}/guest"
 IMAGE_DIR="${GUEST_DIR}/image"
 
 ALPINE_VERSION=${ALPINE_VERSION:-3.23.0}
-ALPINE_BRANCH=${ALPINE_BRANCH:-v3.23}
+ALPINE_BRANCH=${ALPINE_BRANCH:-"v${ALPINE_VERSION%.*}"}
 ARCH=${ARCH:-$(uname -m)}
 if [[ "${ARCH}" == "x86_64" && "$(uname -s)" == "Darwin" ]]; then
     if sysctl -n hw.optional.arm64 >/dev/null 2>&1; then

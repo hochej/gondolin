@@ -21,10 +21,16 @@ tooling to boot the micro-VM under QEMU.
 
 ## Common tasks
 
-Build `sandboxd`:
+Mandatory build command (builds the initramfs image and kernel without booting):
 
 ```sh
 make build
+```
+
+Build `sandboxd` only:
+
+```sh
+make build-bins
 ```
 
 Create the Alpine initramfs image:

@@ -1,4 +1,4 @@
-.PHONY: build build-inner test clean run image image-inner kernel kernel-inner qemu lint typecheck format
+.PHONY: build build-bins build-inner test clean run image image-inner kernel kernel-inner qemu lint typecheck format
 
 RUN_PARALLEL ?= ../scripts/run-parallel
 
@@ -16,7 +16,8 @@ IMAGE_INIT ?= ./image/init
 SANDBOXD_BIN ?= $(CURDIR)/zig-out/bin/sandboxd
 SANDBOXFS_BIN ?= $(CURDIR)/zig-out/bin/sandboxfs
 
-ALPINE_BRANCH ?= v3.20
+ALPINE_VERSION ?= 3.23.0
+ALPINE_BRANCH ?= v$(shell echo $(ALPINE_VERSION) | cut -d. -f1,2)
 ALPINE_MIRROR ?= https://dl-cdn.alpinelinux.org/alpine
 KERNEL_PKG ?= linux-virt
 KERNEL ?= $(IMAGE_OUT)/vmlinuz-virt
@@ -44,11 +45,11 @@ endif
 
 ALPINE_ARCH ?= $(DEFAULT_ARCH)
 QEMU ?= $(DEFAULT_QEMU)
-QEMU_MACHINE ?=
+QEMU_MACHINE :=
 MITM_CA_CERT ?= $(abspath $(CURDIR)/../host/var/mitm/ca.crt)
 MITM_CA_CERT_PATH := $(wildcard $(MITM_CA_CERT))
 ifeq ($(ALPINE_ARCH),aarch64)
-QEMU_MACHINE ?= -machine virt
+QEMU_MACHINE := -machine virt
 endif
 
 QEMU_MEMORY ?= 256M
@@ -60,21 +61,23 @@ QEMU_SERIAL ?= stdio
 QEMU_WAIT ?= on
 VIRTIO_SOCK ?= $(IMAGE_OUT)/virtio.sock
 
-build:
+build: image kernel
+
+build-bins:
 	@$(RUN_PARALLEL) -j 1 \
 		"guest:build" "$(MAKE) build-inner"
 
 build-inner:
 	$(ZIG) build -Doptimize=$(OPTIMIZE)
 
-run: build
+run: build-bins
 	./zig-out/bin/sandboxd
 
 $(SANDBOXD_BIN): $(ZIG_BUILD_DEPS)
 	$(ZIG) build -Doptimize=$(OPTIMIZE)
 
 $(IMAGE_INITRAMFS): $(SANDBOXD_BIN) $(SANDBOXFS_BIN) $(IMAGE_SCRIPT) $(IMAGE_INIT) $(MITM_CA_CERT_PATH)
-	ARCH=$(ALPINE_ARCH) MITM_CA_CERT=$(MITM_CA_CERT) $(IMAGE_SCRIPT)
+	ARCH=$(ALPINE_ARCH) ALPINE_VERSION=$(ALPINE_VERSION) ALPINE_BRANCH=$(ALPINE_BRANCH) MITM_CA_CERT=$(MITM_CA_CERT) $(IMAGE_SCRIPT)
 
 image:
 	@$(RUN_PARALLEL) -j 1 \
@@ -134,7 +137,7 @@ format:
 lint:
 	$(ZIG) fmt --check $(ZIG_SOURCES)
 
-typecheck: build
+typecheck: build-bins
 
 
 test: image kernel
@@ -142,4 +145,4 @@ test: image kernel
 	$(TSX) ../host/bin/guest-tests.ts
 
 clean:
-	rm -rf zig-cache zig-out
+	rm -rf zig-cache zig-out $(IMAGE_OUT)
