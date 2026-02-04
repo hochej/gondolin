@@ -1,6 +1,7 @@
 import { EventEmitter } from "events";
 import net from "net";
 import fs from "fs";
+import fsp from "fs/promises";
 import path from "path";
 import dgram from "dgram";
 import tls from "tls";
@@ -158,6 +159,12 @@ export type QemuNetworkOptions = {
   policy?: SandboxPolicy;
 };
 
+type CaCert = {
+  key: forge.pki.rsa.PrivateKey;
+  cert: forge.pki.Certificate;
+  certPem: string;
+};
+
 export class QemuNetworkBackend extends EventEmitter {
   private server: net.Server | null = null;
   private socket: net.Socket | null = null;
@@ -165,9 +172,9 @@ export class QemuNetworkBackend extends EventEmitter {
   private stack: NetworkStack | null = null;
   private readonly udpSessions = new Map<string, UdpSession>();
   private readonly tcpSessions = new Map<string, TcpSession>();
-  private caCertPath: string | null = null;
-  private caKeyPath: string | null = null;
+  private caPromise: Promise<CaCert> | null = null;
   private tlsContexts = new Map<string, tls.SecureContext>();
+  private tlsContextPromises = new Map<string, Promise<tls.SecureContext>>();
   private policy: SandboxPolicy | null = null;
 
   constructor(private readonly options: QemuNetworkOptions) {
@@ -505,19 +512,19 @@ export class QemuNetworkBackend extends EventEmitter {
 
     const tlsSocket = new tls.TLSSocket(stream, {
       isServer: true,
-      secureContext: this.getTlsContext(session.dstIP),
       ALPNProtocols: ["http/1.1"],
       SNICallback: (servername, callback) => {
         const sni = servername || session.dstIP;
-        try {
-          const context = this.getTlsContext(sni);
-          if (this.options.debug) {
-            this.emit("log", `[net] tls sni ${sni}`);
-          }
-          callback(null, context);
-        } catch (err) {
-          callback(err as Error);
-        }
+        this.getTlsContextAsync(sni)
+          .then((context) => {
+            if (this.options.debug) {
+              this.emit("log", `[net] tls sni ${sni}`);
+            }
+            callback(null, context);
+          })
+          .catch((err) => {
+            callback(err as Error);
+          });
       },
     });
 
@@ -1010,16 +1017,33 @@ export class QemuNetworkBackend extends EventEmitter {
     return this.options.mitmCertDir ?? path.join(process.cwd(), "var", "mitm");
   }
 
-  private ensureCa() {
-    if (this.caCertPath && this.caKeyPath) return;
+  private async ensureCaAsync(): Promise<CaCert> {
+    if (this.caPromise) return this.caPromise;
 
+    this.caPromise = this.loadOrCreateCa();
+    return this.caPromise;
+  }
+
+  private async loadOrCreateCa(): Promise<CaCert> {
     const mitmDir = this.getMitmDir();
-    fs.mkdirSync(mitmDir, { recursive: true });
+    await fsp.mkdir(mitmDir, { recursive: true });
 
     const caKeyPath = path.join(mitmDir, "ca.key");
     const caCertPath = path.join(mitmDir, "ca.crt");
 
-    if (!fs.existsSync(caKeyPath) || !fs.existsSync(caCertPath)) {
+    try {
+      // Try to load existing CA
+      const [keyPem, certPem] = await Promise.all([
+        fsp.readFile(caKeyPath, "utf8"),
+        fsp.readFile(caCertPath, "utf8"),
+      ]);
+      return {
+        key: forge.pki.privateKeyFromPem(keyPem),
+        cert: forge.pki.certificateFromPem(certPem),
+        certPem,
+      };
+    } catch {
+      // Generate new CA
       const keys = forge.pki.rsa.generateKeyPair(2048);
       const cert = forge.pki.createCertificate();
 
@@ -1045,48 +1069,62 @@ export class QemuNetworkBackend extends EventEmitter {
 
       cert.sign(keys.privateKey, forge.md.sha256.create());
 
-      fs.writeFileSync(caKeyPath, forge.pki.privateKeyToPem(keys.privateKey));
-      fs.writeFileSync(caCertPath, forge.pki.certificateToPem(cert));
+      const keyPem = forge.pki.privateKeyToPem(keys.privateKey);
+      const certPem = forge.pki.certificateToPem(cert);
+
+      await Promise.all([
+        fsp.writeFile(caKeyPath, keyPem),
+        fsp.writeFile(caCertPath, certPem),
+      ]);
 
       if (this.options.debug) {
         this.emit("log", `[net] generated mitm CA at ${caCertPath}`);
       }
-    }
 
-    this.caKeyPath = caKeyPath;
-    this.caCertPath = caCertPath;
+      return { key: keys.privateKey, cert, certPem };
+    }
   }
 
-  private getTlsContext(servername: string) {
+  private async getTlsContextAsync(servername: string): Promise<tls.SecureContext> {
     const normalized = servername.trim() || "unknown";
+
+    // Return cached context if available
     const cached = this.tlsContexts.get(normalized);
     if (cached) return cached;
 
-    this.ensureCa();
-    if (!this.caCertPath || !this.caKeyPath) {
-      throw new Error("MITM CA is not initialized");
+    // Return pending promise if already loading
+    const pending = this.tlsContextPromises.get(normalized);
+    if (pending) return pending;
+
+    // Start loading and cache the promise
+    const promise = this.createTlsContext(normalized);
+    this.tlsContextPromises.set(normalized, promise);
+
+    try {
+      const context = await promise;
+      this.tlsContexts.set(normalized, context);
+      return context;
+    } finally {
+      this.tlsContextPromises.delete(normalized);
     }
-
-    const { keyPath, certPath } = this.ensureLeafCertificate(normalized);
-    const leafCert = fs.readFileSync(certPath, "utf8");
-    const caCert = fs.readFileSync(this.caCertPath, "utf8");
-
-    const context = tls.createSecureContext({
-      key: fs.readFileSync(keyPath),
-      cert: `${leafCert}\n${caCert}`,
-    });
-
-    this.tlsContexts.set(normalized, context);
-    return context;
   }
 
-  private ensureLeafCertificate(servername: string) {
-    if (!this.caCertPath || !this.caKeyPath) {
-      throw new Error("MITM CA is not initialized");
-    }
+  private async createTlsContext(servername: string): Promise<tls.SecureContext> {
+    const ca = await this.ensureCaAsync();
+    const { keyPem, certPem } = await this.ensureLeafCertificateAsync(servername, ca);
 
+    return tls.createSecureContext({
+      key: keyPem,
+      cert: `${certPem}\n${ca.certPem}`,
+    });
+  }
+
+  private async ensureLeafCertificateAsync(
+    servername: string,
+    ca: CaCert
+  ): Promise<{ keyPem: string; certPem: string }> {
     const hostsDir = path.join(this.getMitmDir(), "hosts");
-    fs.mkdirSync(hostsDir, { recursive: true });
+    await fsp.mkdir(hostsDir, { recursive: true });
 
     const hash = crypto.createHash("sha256").update(servername).digest("hex").slice(0, 12);
     const slug = servername.replace(/[^a-zA-Z0-9.-]/g, "_");
@@ -1095,50 +1133,56 @@ export class QemuNetworkBackend extends EventEmitter {
     const keyPath = path.join(hostsDir, `${baseName}.key`);
     const certPath = path.join(hostsDir, `${baseName}.crt`);
 
-    if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
-      return { keyPath, certPath };
+    try {
+      // Try to load existing cert
+      const [keyPem, certPem] = await Promise.all([
+        fsp.readFile(keyPath, "utf8"),
+        fsp.readFile(certPath, "utf8"),
+      ]);
+      return { keyPem, certPem };
+    } catch {
+      // Generate new leaf certificate
+      const keys = forge.pki.rsa.generateKeyPair(2048);
+      const cert = forge.pki.createCertificate();
+
+      cert.publicKey = keys.publicKey;
+      cert.serialNumber = generateSerialNumber();
+      cert.validity.notBefore = new Date();
+      cert.validity.notAfter = new Date();
+      cert.validity.notAfter.setDate(cert.validity.notBefore.getDate() + 825);
+
+      const safeName = servername.replace(/[\r\n]/g, "");
+      const attrs = [{ name: "commonName", value: safeName }];
+      cert.setSubject(attrs);
+      cert.setIssuer(ca.cert.subject.attributes);
+
+      const altNames = net.isIP(servername)
+        ? [{ type: 7, ip: servername }]
+        : [{ type: 2, value: servername }];
+
+      cert.setExtensions([
+        { name: "basicConstraints", cA: false },
+        {
+          name: "keyUsage",
+          digitalSignature: true,
+          keyEncipherment: true,
+        },
+        { name: "extKeyUsage", serverAuth: true },
+        { name: "subjectAltName", altNames },
+      ]);
+
+      cert.sign(ca.key, forge.md.sha256.create());
+
+      const keyPem = forge.pki.privateKeyToPem(keys.privateKey);
+      const certPem = forge.pki.certificateToPem(cert);
+
+      await Promise.all([
+        fsp.writeFile(keyPath, keyPem),
+        fsp.writeFile(certPath, certPem),
+      ]);
+
+      return { keyPem, certPem };
     }
-
-    const caKeyPem = fs.readFileSync(this.caKeyPath, "utf8");
-    const caCertPem = fs.readFileSync(this.caCertPath, "utf8");
-    const caKey = forge.pki.privateKeyFromPem(caKeyPem);
-    const caCert = forge.pki.certificateFromPem(caCertPem);
-
-    const keys = forge.pki.rsa.generateKeyPair(2048);
-    const cert = forge.pki.createCertificate();
-
-    cert.publicKey = keys.publicKey;
-    cert.serialNumber = generateSerialNumber();
-    cert.validity.notBefore = new Date();
-    cert.validity.notAfter = new Date();
-    cert.validity.notAfter.setDate(cert.validity.notBefore.getDate() + 825);
-
-    const safeName = servername.replace(/[\r\n]/g, "");
-    const attrs = [{ name: "commonName", value: safeName }];
-    cert.setSubject(attrs);
-    cert.setIssuer(caCert.subject.attributes);
-
-    const altNames = net.isIP(servername)
-      ? [{ type: 7, ip: servername }]
-      : [{ type: 2, value: servername }];
-
-    cert.setExtensions([
-      { name: "basicConstraints", cA: false },
-      {
-        name: "keyUsage",
-        digitalSignature: true,
-        keyEncipherment: true,
-      },
-      { name: "extKeyUsage", serverAuth: true },
-      { name: "subjectAltName", altNames },
-    ]);
-
-    cert.sign(caKey, forge.md.sha256.create());
-
-    fs.writeFileSync(keyPath, forge.pki.privateKeyToPem(keys.privateKey));
-    fs.writeFileSync(certPath, forge.pki.certificateToPem(cert));
-
-    return { keyPath, certPath };
   }
 
   private stripHopByHopHeaders(headers: Record<string, string>) {
