@@ -128,6 +128,7 @@ export type ExecSession = {
 export type ExecProcessCallbacks = {
   sendStdin: (id: number, data: Buffer | string) => void;
   sendStdinEof: (id: number) => void;
+  sendResize?: (id: number, rows: number, cols: number) => void;
   cleanup: (id: number) => void;
 };
 
@@ -219,6 +220,14 @@ export class ExecProcess implements PromiseLike<ExecResult>, AsyncIterable<strin
       throw new Error("stdin was not enabled for this exec");
     }
     this.callbacks.sendStdinEof(this.session.id);
+  }
+
+  /**
+   * Resize the PTY if supported by the underlying transport.
+   */
+  resize(rows: number, cols: number): void {
+    if (!this.callbacks.sendResize) return;
+    this.callbacks.sendResize(this.session.id, rows, cols);
   }
 
   /**
@@ -348,11 +357,25 @@ export class ExecProcess implements PromiseLike<ExecResult>, AsyncIterable<strin
 
     const stderrOut = stderr ?? stdout;
 
+    const onResize = () => {
+      if (!stdout.isTTY) return;
+      const cols = stdout.columns;
+      const rows = stdout.rows;
+      if (typeof cols === "number" && typeof rows === "number") {
+        this.resize(rows, cols);
+      }
+    };
+
     // Setup raw mode for TTY
     if (stdin.isTTY) {
       stdin.setRawMode(true);
     }
     stdin.resume();
+
+    if (stdout.isTTY) {
+      onResize();
+      stdout.on("resize", onResize);
+    }
 
     // Pipe stdin to process
     const onStdinData = (chunk: Buffer) => {
@@ -376,6 +399,9 @@ export class ExecProcess implements PromiseLike<ExecResult>, AsyncIterable<strin
     this.session.resultPromise.finally(() => {
       stdin.off("data", onStdinData);
       stdin.off("end", onStdinEnd);
+      if (stdout.isTTY) {
+        stdout.off("resize", onResize);
+      }
       if (stdin.isTTY) {
         stdin.setRawMode(false);
       }

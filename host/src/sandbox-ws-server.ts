@@ -12,6 +12,7 @@ import {
   FrameReader,
   IncomingMessage,
   buildExecRequest,
+  buildPtyResize,
   buildStdinData,
   decodeMessage,
   encodeFrame,
@@ -21,6 +22,7 @@ import {
   ClientMessage,
   ErrorMessage,
   ExecCommandMessage,
+  PtyResizeCommandMessage,
   StdinCommandMessage,
   encodeOutputFrame,
   ServerMessage,
@@ -866,6 +868,8 @@ export class SandboxWsServer extends EventEmitter {
         this.handleExec(ws, message);
       } else if (message.type === "stdin") {
         this.handleStdin(ws, message);
+      } else if (message.type === "pty_resize") {
+        this.handlePtyResize(ws, message);
       } else if (message.type === "lifecycle") {
         if (message.action === "restart") {
           void this.controller.restart();
@@ -1028,6 +1032,48 @@ export class SandboxWsServer extends EventEmitter {
     }
 
     if (!this.bridge.send(buildStdinData(message.id, data, message.eof))) {
+      sendError(ws, {
+        type: "error",
+        id: message.id,
+        code: "queue_full",
+        message: "virtio bridge queue exceeded",
+      });
+    }
+  }
+
+  private handlePtyResize(ws: WebSocket, message: PtyResizeCommandMessage) {
+    if (!isValidRequestId(message.id)) {
+      sendError(ws, {
+        type: "error",
+        code: "invalid_request",
+        message: "pty_resize requires a uint32 id",
+      });
+      return;
+    }
+
+    if (!this.inflight.has(message.id)) {
+      sendError(ws, {
+        type: "error",
+        id: message.id,
+        code: "unknown_id",
+        message: "request id not found",
+      });
+      return;
+    }
+
+    const rows = Number(message.rows);
+    const cols = Number(message.cols);
+    if (!Number.isFinite(rows) || !Number.isFinite(cols) || rows < 1 || cols < 1) {
+      sendError(ws, {
+        type: "error",
+        id: message.id,
+        code: "invalid_request",
+        message: "pty_resize requires positive rows and cols",
+      });
+      return;
+    }
+
+    if (!this.bridge.send(buildPtyResize(message.id, Math.trunc(rows), Math.trunc(cols)))) {
       sendError(ws, {
         type: "error",
         id: message.id,

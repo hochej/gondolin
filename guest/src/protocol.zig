@@ -23,6 +23,16 @@ pub const StdinData = struct {
     eof: bool,
 };
 
+pub const PtyResize = struct {
+    rows: u32,
+    cols: u32,
+};
+
+pub const InputMessage = union(enum) {
+    stdin: StdinData,
+    resize: PtyResize,
+};
+
 pub const FrameReader = struct {
     allocator: std.mem.Allocator,
     len_buf: [4]u8 = undefined,
@@ -161,6 +171,13 @@ pub fn decodeStdinData(allocator: std.mem.Allocator, frame: []const u8, expected
     const root = try dec.decodeValue();
     defer cbor.freeValue(allocator, root);
     return parseStdinData(root, expected_id);
+}
+
+pub fn decodeInputMessage(allocator: std.mem.Allocator, frame: []const u8, expected_id: u32) !InputMessage {
+    var dec = cbor.Decoder.init(allocator, frame);
+    const root = try dec.decodeValue();
+    defer cbor.freeValue(allocator, root);
+    return parseInputMessage(root, expected_id);
 }
 
 pub fn encodeExecOutput(
@@ -379,6 +396,43 @@ fn parseStdinData(root: cbor.Value, expected_id: u32) !StdinData {
     }
 
     return .{ .data = data, .eof = eof };
+}
+
+fn parsePtyResize(root: cbor.Value, expected_id: u32) !PtyResize {
+    const map = try expectMap(root);
+    const msg_type = try expectText(cbor.getMapValue(map, "t") orelse return ProtocolError.MissingField);
+    if (!std.mem.eql(u8, msg_type, "pty_resize")) {
+        return ProtocolError.UnexpectedType;
+    }
+
+    const id_val = cbor.getMapValue(map, "id") orelse return ProtocolError.MissingField;
+    const id = try expectU32(id_val);
+    if (id != expected_id) return ProtocolError.InvalidValue;
+
+    const payload_val = cbor.getMapValue(map, "p") orelse return ProtocolError.MissingField;
+    const payload = try expectMap(payload_val);
+
+    const rows_val = cbor.getMapValue(payload, "rows") orelse return ProtocolError.MissingField;
+    const cols_val = cbor.getMapValue(payload, "cols") orelse return ProtocolError.MissingField;
+
+    return .{
+        .rows = try expectU32(rows_val),
+        .cols = try expectU32(cols_val),
+    };
+}
+
+fn parseInputMessage(root: cbor.Value, expected_id: u32) !InputMessage {
+    const map = try expectMap(root);
+    const msg_type = try expectText(cbor.getMapValue(map, "t") orelse return ProtocolError.MissingField);
+
+    if (std.mem.eql(u8, msg_type, "stdin_data")) {
+        return .{ .stdin = try parseStdinData(root, expected_id) };
+    }
+    if (std.mem.eql(u8, msg_type, "pty_resize")) {
+        return .{ .resize = try parsePtyResize(root, expected_id) };
+    }
+
+    return ProtocolError.UnexpectedType;
 }
 
 fn parseTextArray(allocator: std.mem.Allocator, value: ?cbor.Value) ![]const []const u8 {

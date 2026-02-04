@@ -3,6 +3,7 @@ const protocol = @import("sandboxd").protocol;
 const c = @cImport({
     @cInclude("pty.h");
     @cInclude("unistd.h");
+    @cInclude("sys/ioctl.h");
 });
 
 const log = std.log.scoped(.sandboxd);
@@ -372,7 +373,7 @@ fn handleExec(allocator: std.mem.Allocator, virtio_fd: std.posix.fd_t, req: prot
                 try writer.flush(virtio_fd);
             }
             if (stdin_open and (revents & (std.posix.POLL.IN | std.posix.POLL.HUP)) != 0) {
-                stdin_open = handleStdin(allocator, &stdin_reader, virtio_fd, stdin_fd.?, req.id, close_stdin_on_eof) catch |err| blk: {
+                stdin_open = handleStdin(allocator, &stdin_reader, virtio_fd, stdin_fd.?, req.id, close_stdin_on_eof, pty_master) catch |err| blk: {
                     log.err("stdin handling failed: {s}", .{@errorName(err)});
                     if (close_stdin_on_eof) {
                         if (stdin_fd) |fd| std.posix.close(fd);
@@ -414,6 +415,7 @@ fn handleStdin(
     stdin_fd: std.posix.fd_t,
     expected_id: u32,
     close_on_eof: bool,
+    pty_master: ?std.posix.fd_t,
 ) !bool {
     while (true) {
         const frame = reader.readFrame(virtio_fd) catch |err| {
@@ -428,21 +430,45 @@ fn handleStdin(
         const frame_buf = frame.?;
         defer allocator.free(frame_buf);
 
-        const data = try protocol.decodeStdinData(allocator, frame_buf, expected_id);
-        if (data.data.len > 0) {
-            try protocol.writeAll(stdin_fd, data.data);
-        }
-        if (data.eof) {
-            if (close_on_eof) {
-                std.posix.close(stdin_fd);
-            } else {
-                const eot: [1]u8 = .{4};
-                _ = protocol.writeAll(stdin_fd, &eot) catch {};
-            }
-            return false;
+        const message = try protocol.decodeInputMessage(allocator, frame_buf, expected_id);
+        switch (message) {
+            .stdin => |data| {
+                if (data.data.len > 0) {
+                    try protocol.writeAll(stdin_fd, data.data);
+                }
+                if (data.eof) {
+                    if (close_on_eof) {
+                        std.posix.close(stdin_fd);
+                    } else {
+                        const eot: [1]u8 = .{4};
+                        _ = protocol.writeAll(stdin_fd, &eot) catch {};
+                    }
+                    return false;
+                }
+            },
+            .resize => |size| {
+                if (pty_master) |fd| {
+                    applyPtyResize(fd, size.rows, size.cols);
+                }
+            },
         }
     }
     return true;
+}
+
+fn applyPtyResize(fd: std.posix.fd_t, rows: u32, cols: u32) void {
+    const Field = @TypeOf(@as(c.struct_winsize, undefined).ws_row);
+    const max = std.math.maxInt(Field);
+    const safe_rows: Field = @intCast(if (rows > max) max else rows);
+    const safe_cols: Field = @intCast(if (cols > max) max else cols);
+
+    var winsize = c.struct_winsize{
+        .ws_row = safe_rows,
+        .ws_col = safe_cols,
+        .ws_xpixel = 0,
+        .ws_ypixel = 0,
+    };
+    _ = c.ioctl(fd, c.TIOCSWINSZ, &winsize);
 }
 
 fn flushWriter(virtio_fd: std.posix.fd_t, writer: *protocol.FrameWriter) !void {

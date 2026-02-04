@@ -80,6 +80,16 @@ export type StdinData = {
   };
 };
 
+export type PtyResize = {
+  v: number;
+  t: "pty_resize";
+  id: number;
+  p: {
+    rows: number;
+    cols: number;
+  };
+};
+
 export class FrameReader {
   private buffer = Buffer.alloc(0);
   private expectedLength: number | null = null;
@@ -156,6 +166,18 @@ export function buildStdinData(id: number, data: Buffer, eof?: boolean): StdinDa
     p: {
       data,
       ...(eof ? { eof } : {}),
+    },
+  };
+}
+
+export function buildPtyResize(id: number, rows: number, cols: number): PtyResize {
+  return {
+    v: 1,
+    t: "pty_resize",
+    id,
+    p: {
+      rows,
+      cols,
     },
   };
 }

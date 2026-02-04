@@ -20,6 +20,13 @@ export type StdinCommandMessage = {
   eof?: boolean;
 };
 
+export type PtyResizeCommandMessage = {
+  type: "pty_resize";
+  id: number;
+  rows: number;
+  cols: number;
+};
+
 export type LifecycleCommandMessage = {
   type: "lifecycle";
   action: "restart" | "shutdown";
@@ -40,6 +47,7 @@ export type ClientMessage =
   | BootCommandMessage
   | ExecCommandMessage
   | StdinCommandMessage
+  | PtyResizeCommandMessage
   | LifecycleCommandMessage
   | PolicyCommandMessage;
 

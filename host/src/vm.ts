@@ -337,6 +337,7 @@ export class VM {
     const proc = new ExecProcess(session, {
       sendStdin: (id, data) => this.sendStdinData(id, data),
       sendStdinEof: (id) => this.sendStdinEof(id),
+      sendResize: (id, rows, cols) => this.sendPtyResize(id, rows, cols),
       cleanup: (id) => this.sessions.delete(id),
     });
 
@@ -457,6 +458,19 @@ export class VM {
       type: "stdin",
       id,
       eof: true,
+    });
+  }
+
+  private sendPtyResize(id: number, rows: number, cols: number) {
+    if (!Number.isFinite(rows) || !Number.isFinite(cols)) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const safeRows = Math.max(1, Math.trunc(rows));
+    const safeCols = Math.max(1, Math.trunc(cols));
+    this.sendJson({
+      type: "pty_resize",
+      id,
+      rows: safeRows,
+      cols: safeCols,
     });
   }
 
