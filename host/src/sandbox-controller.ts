@@ -187,7 +187,12 @@ function buildQemuArgs(config: SandboxConfig) {
       machineType === "microvm" ? "virtio-blk-device" : "virtio-blk-pci";
     args.push("-device", `${blkDevice},drive=drive0`);
   }
-  args.push("-machine", machineType);
+  if (machineType === "microvm") {
+    // microvm needs explicit ISA serial for kernel console (ttyS0)
+    args.push("-machine", "microvm,isa-serial=on");
+  } else {
+    args.push("-machine", machineType);
+  }
 
   const accel = config.accel ?? selectAccel(targetArch);
   if (accel) args.push("-accel", accel);
