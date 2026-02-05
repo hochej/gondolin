@@ -16,6 +16,13 @@ import type {
   AssetManifest,
   Architecture,
 } from "./build-config";
+import {
+  buildAlpineImages,
+  downloadFile,
+  decompressTarGz,
+  parseTar,
+  parseApkIndex,
+} from "./build-alpine";
 
 
 /** Fixed output filenames for assets */
@@ -189,81 +196,90 @@ async function buildNative(
 ): Promise<BuildResult> {
   const outputDir = path.resolve(options.outputDir);
 
-  // Find the guest directory (relative to this package)
-  const guestDir = findGuestDir();
-  if (!guestDir) {
-    throw new Error(
-      "Could not find guest directory. Make sure you're running from a gondolin checkout."
-    );
-  }
-
-  log(`Using guest sources from: ${guestDir}`);
-
-  // Step 1: Build sandboxd and sandboxfs binaries
+  // Step 1: Build or locate sandboxd and sandboxfs binaries
   let sandboxdPath = config.sandboxdPath;
   let sandboxfsPath = config.sandboxfsPath;
 
   if (!options.skipBinaries && !sandboxdPath && !sandboxfsPath) {
+    const guestDir = findGuestDir();
+    if (!guestDir) {
+      throw new Error(
+        "Could not find guest directory for Zig build. Either:\n" +
+        "  1. Run from a gondolin checkout, or\n" +
+        "  2. Set GONDOLIN_GUEST_SRC to the guest directory, or\n" +
+        "  3. Provide sandboxdPath and sandboxfsPath in the build config."
+      );
+    }
+    log(`Using guest sources from: ${guestDir}`);
     log("Building guest binaries...");
     await buildGuestBinaries(guestDir, config.arch, log);
     sandboxdPath = path.join(guestDir, "zig-out", "bin", "sandboxd");
     sandboxfsPath = path.join(guestDir, "zig-out", "bin", "sandboxfs");
   } else {
-    sandboxdPath = sandboxdPath ?? path.join(guestDir, "zig-out", "bin", "sandboxd");
-    sandboxfsPath = sandboxfsPath ?? path.join(guestDir, "zig-out", "bin", "sandboxfs");
+    if (!sandboxdPath || !sandboxfsPath) {
+      const guestDir = findGuestDir();
+      sandboxdPath = sandboxdPath ?? path.join(guestDir ?? "", "zig-out", "bin", "sandboxd");
+      sandboxfsPath = sandboxfsPath ?? path.join(guestDir ?? "", "zig-out", "bin", "sandboxfs");
+    }
   }
 
-  // Step 2: Build the images using the shell script
+  if (!fs.existsSync(sandboxdPath)) {
+    throw new Error(`sandboxd binary not found: ${sandboxdPath}`);
+  }
+  if (!fs.existsSync(sandboxfsPath)) {
+    throw new Error(`sandboxfs binary not found: ${sandboxfsPath}`);
+  }
+
+  // Step 2: Build the images using the TypeScript builder
   log("Building guest images...");
 
-  const imageDir = path.join(guestDir, "image");
-  const buildScript = path.join(imageDir, "build.sh");
-
-  // Build environment
   const alpineConfig = resolveAlpineConfig(config);
   const { kernelPackage } = resolveKernelConfig(alpineConfig);
   warnOnKernelPackageMismatch(alpineConfig.rootfsPackages, kernelPackage);
 
-  const buildEnv: Record<string, string> = {
-    ...process.env,
-    ARCH: config.arch,
-    ALPINE_VERSION: alpineConfig.version,
-    OUT_DIR: workDir,
-    SANDBOXD_BIN: sandboxdPath,
-    SANDBOXFS_BIN: sandboxfsPath,
-  };
+  // Determine cache directory
+  const cacheDir = path.join(
+    os.homedir(), ".cache", "gondolin", "build"
+  );
 
-  if (alpineConfig.branch) {
-    buildEnv.ALPINE_BRANCH = alpineConfig.branch;
-  }
-  if (alpineConfig.mirror) {
-    buildEnv.ALPINE_URL = `${alpineConfig.mirror}/${alpineConfig.branch ?? `v${alpineConfig.version.split(".").slice(0, 2).join(".")}`}/releases/${config.arch}/alpine-minirootfs-${alpineConfig.version}-${config.arch}.tar.gz`;
-  }
-  if (alpineConfig.rootfsPackages) {
-    buildEnv.ROOTFS_PACKAGES = alpineConfig.rootfsPackages.join(" ");
-  }
-  if (alpineConfig.initramfsPackages) {
-    buildEnv.INITRAMFS_PACKAGES = alpineConfig.initramfsPackages.join(" ");
-  }
-  if (config.rootfs?.label) {
-    buildEnv.ROOTFS_LABEL = config.rootfs.label;
-  }
-  if (config.rootfs?.sizeMb) {
-    buildEnv.ROOTFS_IMAGE_SIZE_MB = String(config.rootfs.sizeMb);
-  }
+  // Read custom init scripts if provided
+  let rootfsInit: string | undefined;
+  let initramfsInit: string | undefined;
   if (config.init?.rootfsInit) {
-    buildEnv.ROOTFS_INIT = path.resolve(config.init.rootfsInit);
+    rootfsInit = fs.readFileSync(path.resolve(config.init.rootfsInit), "utf8");
   }
   if (config.init?.initramfsInit) {
-    buildEnv.INITRAMFS_INIT = path.resolve(config.init.initramfsInit);
+    initramfsInit = fs.readFileSync(path.resolve(config.init.initramfsInit), "utf8");
   }
 
-  // Run the build script
-  await runCommand(buildScript, [], { cwd: imageDir, env: buildEnv }, log);
+  // Compute Alpine URL if a custom mirror is set
+  let alpineUrl: string | undefined;
+  if (alpineConfig.mirror) {
+    const branch = alpineConfig.branch ?? `v${alpineConfig.version.split(".").slice(0, 2).join(".")}`;
+    alpineUrl = `${alpineConfig.mirror}/${branch}/releases/${config.arch}/alpine-minirootfs-${alpineConfig.version}-${config.arch}.tar.gz`;
+  }
+
+  await buildAlpineImages({
+    arch: config.arch,
+    alpineVersion: alpineConfig.version,
+    alpineBranch: alpineConfig.branch ?? `v${alpineConfig.version.split(".").slice(0, 2).join(".")}`,
+    alpineUrl,
+    rootfsPackages: alpineConfig.rootfsPackages,
+    initramfsPackages: alpineConfig.initramfsPackages,
+    sandboxdBin: sandboxdPath,
+    sandboxfsBin: sandboxfsPath,
+    rootfsLabel: config.rootfs?.label ?? "gondolin-root",
+    rootfsSizeMb: config.rootfs?.sizeMb,
+    rootfsInit,
+    initramfsInit,
+    workDir,
+    cacheDir,
+    log,
+  });
 
   // Step 3: Fetch the kernel
   log("Fetching kernel...");
-  await fetchKernel(workDir, config.arch, alpineConfig, log);
+  await fetchKernel(workDir, config.arch, alpineConfig, cacheDir, log);
 
   // Step 4: Copy assets to output directory
   log("Copying assets to output directory...");
@@ -571,6 +587,7 @@ async function fetchKernel(
     kernelPackage?: string;
     kernelImage?: string;
   },
+  cacheDir: string,
   log: (msg: string) => void
 ): Promise<void> {
   const kernelPath = path.join(outputDir, KERNEL_FILENAME);
@@ -588,58 +605,63 @@ async function fetchKernel(
 
   log(`Fetching ${kernelPackage} from Alpine ${branch} (${arch})`);
 
-  // Download APKINDEX to find kernel version
+  fs.mkdirSync(cacheDir, { recursive: true });
+
+  // Download and parse APKINDEX to find kernel version
+  const indexTarPath = path.join(cacheDir, `APKINDEX-main-${branch}-${arch}.tar.gz`);
   const indexUrl = `${mirror}/${branch}/main/${arch}/APKINDEX.tar.gz`;
-  const indexPath = path.join(outputDir, "APKINDEX.tar.gz");
 
-  execFileSync("curl", ["-L", "-o", indexPath, indexUrl], { stdio: "pipe" });
-  execFileSync("tar", ["-xzf", indexPath, "-C", outputDir, "APKINDEX"], { stdio: "pipe" });
-
-  // Parse APKINDEX to find kernel version
-  const apkIndexPath = path.join(outputDir, "APKINDEX");
-  const apkIndex = fs.readFileSync(apkIndexPath, "utf8");
-
-  let kernelVersion: string | null = null;
-  const lines = apkIndex.split("\n");
-  let foundPkg = false;
-
-  for (const line of lines) {
-    if (line === `P:${kernelPackage}`) {
-      foundPkg = true;
-    } else if (foundPkg && line.startsWith("V:")) {
-      kernelVersion = line.slice(2);
-      break;
-    } else if (line === "") {
-      foundPkg = false;
-    }
+  if (!fs.existsSync(indexTarPath)) {
+    await downloadFile(indexUrl, indexTarPath);
   }
 
-  if (!kernelVersion) {
-    throw new Error(`Failed to find ${kernelPackage} version in APKINDEX`);
+  const raw = await decompressTarGz(indexTarPath);
+  const tarEntries = parseTar(raw);
+  const indexEntry = tarEntries.find((e) => e.name === "APKINDEX" && e.content);
+  if (!indexEntry?.content) {
+    throw new Error("APKINDEX not found in index tarball");
   }
 
+  const pkgs = parseApkIndex(indexEntry.content.toString("utf8"));
+  const kernelMeta = pkgs.find((p) => p.P === kernelPackage);
+
+  if (!kernelMeta) {
+    throw new Error(`Failed to find ${kernelPackage} in APKINDEX`);
+  }
+
+  const kernelVersion = kernelMeta.V;
   log(`Found ${kernelPackage} version: ${kernelVersion}`);
 
-  // Download and extract kernel
-  const apkUrl = `${mirror}/${branch}/main/${arch}/${kernelPackage}-${kernelVersion}.apk`;
-  const apkPath = path.join(outputDir, `${kernelPackage}.apk`);
-  const kernelEntry = `boot/${kernelImage}`;
+  // Download and extract the kernel binary from the .apk
+  const apkFilename = `${kernelPackage}-${kernelVersion}.apk`;
+  const apkPath = path.join(cacheDir, `${arch}-${apkFilename}`);
 
-  execFileSync("curl", ["-L", "-o", apkPath, apkUrl], { stdio: "pipe" });
-  execFileSync("tar", ["-xzf", apkPath, "-C", outputDir, kernelEntry], { stdio: "pipe" });
+  if (!fs.existsSync(apkPath)) {
+    const apkUrl = `${mirror}/${branch}/main/${arch}/${apkFilename}`;
+    await downloadFile(apkUrl, apkPath);
+  }
 
-  // Move kernel to correct location
-  fs.renameSync(path.join(outputDir, kernelEntry), kernelPath);
+  const apkRaw = await decompressTarGz(apkPath);
+  const apkEntries = parseTar(apkRaw);
+  const kernelEntry = apkEntries.find(
+    (e) => e.name === `boot/${kernelImage}` && e.content
+  );
 
-  // Clean up
-  fs.rmSync(path.join(outputDir, "boot"), { recursive: true, force: true });
-  fs.unlinkSync(indexPath);
-  fs.unlinkSync(apkIndexPath);
-  fs.unlinkSync(apkPath);
+  if (!kernelEntry?.content) {
+    throw new Error(
+      `Kernel image 'boot/${kernelImage}' not found in ${apkFilename}`
+    );
+  }
+
+  fs.writeFileSync(kernelPath, kernelEntry.content);
 }
 
 /**
  * Find the guest directory relative to this package.
+ *
+ * Only needed for Zig compilation of sandboxd/sandboxfs. The image build
+ * itself is now handled entirely in TypeScript and has no dependency on
+ * files inside the guest directory.
  */
 function findGuestDir(): string | null {
   // Check common locations relative to the package
@@ -651,7 +673,7 @@ function findGuestDir(): string | null {
   for (const candidate of candidates) {
     if (
       fs.existsSync(candidate) &&
-      fs.existsSync(path.join(candidate, "image", "build.sh"))
+      fs.existsSync(path.join(candidate, "build.zig"))
     ) {
       return candidate;
     }
@@ -660,7 +682,7 @@ function findGuestDir(): string | null {
   // Check GONDOLIN_GUEST_SRC environment variable
   if (process.env.GONDOLIN_GUEST_SRC) {
     const envPath = process.env.GONDOLIN_GUEST_SRC;
-    if (fs.existsSync(path.join(envPath, "image", "build.sh"))) {
+    if (fs.existsSync(path.join(envPath, "build.zig"))) {
       return envPath;
     }
   }
