@@ -137,6 +137,9 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
+      - name: Enable KVM
+        run: sudo chown $(id -u) /dev/kvm
+
       - name: Install dependencies
         run: pnpm install
 
