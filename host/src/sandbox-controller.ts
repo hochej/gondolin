@@ -174,16 +174,19 @@ function buildQemuArgs(config: SandboxConfig) {
     "-nographic",
   ];
 
+  const targetArch = detectTargetArch(config);
+  const machineType = config.machineType ?? selectMachineType(targetArch);
+
   if (config.rootfsPath) {
     args.push(
       "-drive",
       `file=${config.rootfsPath},format=raw,if=none,id=drive0,snapshot=on`
     );
-    args.push("-device", "virtio-blk-pci,drive=drive0");
+    // microvm has no PCI bus; use virtio-blk-device (MMIO) instead
+    const blkDevice =
+      machineType === "microvm" ? "virtio-blk-device" : "virtio-blk-pci";
+    args.push("-device", `${blkDevice},drive=drive0`);
   }
-
-  const targetArch = detectTargetArch(config);
-  const machineType = config.machineType ?? selectMachineType(targetArch);
   args.push("-machine", machineType);
 
   const accel = config.accel ?? selectAccel(targetArch);
@@ -198,8 +201,14 @@ function buildQemuArgs(config: SandboxConfig) {
     args.push("-serial", "stdio");
   }
 
+  // microvm has no PCI bus; use virtio-*-device (MMIO) variants
+  const useMmio = machineType === "microvm";
+  const rngDev = useMmio ? "virtio-rng-device" : "virtio-rng-pci";
+  const serialDev = useMmio ? "virtio-serial-device" : "virtio-serial-pci";
+  const netDev = useMmio ? "virtio-net-device" : "virtio-net-pci";
+
   args.push("-object", "rng-random,filename=/dev/urandom,id=rng0");
-  args.push("-device", "virtio-rng-pci,rng=rng0");
+  args.push("-device", `${rngDev},rng=rng0`);
   args.push(
     "-chardev",
     `socket,id=virtiocon0,path=${config.virtioSocketPath},server=off`
@@ -209,7 +218,7 @@ function buildQemuArgs(config: SandboxConfig) {
     `socket,id=virtiofs0,path=${config.virtioFsSocketPath},server=off`
   );
 
-  args.push("-device", "virtio-serial-pci,id=virtio-serial0");
+  args.push("-device", `${serialDev},id=virtio-serial0`);
   args.push(
     "-device",
     "virtserialport,chardev=virtiocon0,name=virtio-port,bus=virtio-serial0.0"
@@ -225,7 +234,7 @@ function buildQemuArgs(config: SandboxConfig) {
       `stream,id=net0,server=off,addr.type=unix,addr.path=${config.netSocketPath}`
     );
     const mac = config.netMac ?? "02:00:00:00:00:01";
-    args.push("-device", `virtio-net-pci,netdev=net0,mac=${mac}`);
+    args.push("-device", `${netDev},netdev=net0,mac=${mac}`);
   }
 
   return args;
