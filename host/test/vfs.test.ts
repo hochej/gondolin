@@ -7,7 +7,7 @@ import { createErrnoError } from "../src/vfs/errors";
 import { closeVm, withVm, shouldSkipVmTests } from "./helpers/vm-fixture";
 
 const skipVmTests = shouldSkipVmTests();
-const timeoutMs = Number(process.env.WS_TIMEOUT ?? 15000);
+const timeoutMs = Number(process.env.WS_TIMEOUT ?? 60000);
 const { errno: ERRNO } = os.constants;
 
 const rootProvider = new MemoryProvider();

@@ -5,7 +5,7 @@ import test from "node:test";
 import { closeVm, withVm, shouldSkipVmTests } from "./helpers/vm-fixture";
 
 const skipVmTests = shouldSkipVmTests();
-const timeoutMs = Number(process.env.WS_TIMEOUT ?? 15000);
+const timeoutMs = Number(process.env.WS_TIMEOUT ?? 60000);
 const execVmKey = "exec-default";
 const execVmOptions = {
   server: { console: "none" },

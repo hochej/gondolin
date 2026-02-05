@@ -124,6 +124,9 @@ jobs:
         run: |
           mkdir -p guest/image/out
           tar -xzvf gondolin-guest-x64.tar.gz -C guest/image/out
+          # Touch extracted files so Make considers them newer than source deps
+          # (prevents rebuilding images that were already built in build-guest job)
+          touch guest/image/out/*
 
       - name: Install Zig
         run: |
@@ -147,7 +150,10 @@ jobs:
         run: pnpm run build
 
       - name: Run tests
+        timeout-minutes: 10
         run: make test
+        env:
+          GONDOLIN_GUEST_DIR: ${{ github.workspace }}/guest/image/out
 
   # Optional: Publish preview package for PRs (uses trusted publishing)
   # Uncomment to enable publishing test versions from PRs
