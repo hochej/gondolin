@@ -5,6 +5,25 @@ import { VM } from "../src/vm";
 
 const MAX_STDIN_BYTES = 16 * 1024 * 1024;
 
+/**
+ * Check if hardware virtualization is available.
+ * On Linux, this checks for KVM. On macOS, HVF is always available.
+ */
+function hasHardwareAccel(): boolean {
+  if (process.platform === "darwin") {
+    return true;
+  }
+  if (process.platform === "linux") {
+    try {
+      fs.accessSync("/dev/kvm", fs.constants.R_OK | fs.constants.W_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 function resolveRepoRoot() {
   return path.resolve(__dirname, "../..");
 }
@@ -48,6 +67,16 @@ async function runTest(vm: VM, label: string, payload: Buffer) {
 }
 
 async function main() {
+  // Skip guest tests when hardware acceleration is not available
+  // (TCG emulation is too slow for reliable CI)
+  if (!hasHardwareAccel() && process.env.GONDOLIN_FORCE_VM_TESTS !== "1") {
+    process.stderr.write(
+      "Skipping guest tests: hardware virtualization not available (KVM on Linux, HVF on macOS).\n" +
+      "Set GONDOLIN_FORCE_VM_TESTS=1 to run anyway (may be slow).\n"
+    );
+    return;
+  }
+
   const repoRoot = resolveRepoRoot();
   const tests = defaultTestPaths(repoRoot);
 

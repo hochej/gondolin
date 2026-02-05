@@ -1,4 +1,36 @@
+import fs from "fs";
 import { VM, type VMOptions } from "../../src/vm";
+
+/**
+ * Check if hardware virtualization is available.
+ * On Linux, this checks for KVM. On macOS, HVF is always available.
+ * Returns false for other platforms or when acceleration is unavailable.
+ */
+export function hasHardwareAccel(): boolean {
+  if (process.platform === "darwin") {
+    return true; // HVF is always available on macOS
+  }
+  if (process.platform === "linux") {
+    try {
+      fs.accessSync("/dev/kvm", fs.constants.R_OK | fs.constants.W_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether VM tests should be skipped (no hardware acceleration available).
+ * Can be overridden by setting GONDOLIN_FORCE_VM_TESTS=1.
+ */
+export function shouldSkipVmTests(): boolean {
+  if (process.env.GONDOLIN_FORCE_VM_TESTS === "1") {
+    return false;
+  }
+  return !hasHardwareAccel();
+}
 
 class Semaphore {
   private queue: Array<() => void> = [];

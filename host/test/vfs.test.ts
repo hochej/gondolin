@@ -4,8 +4,9 @@ import test from "node:test";
 
 import { MemoryProvider, ReadonlyProvider } from "../src/vfs";
 import { createErrnoError } from "../src/vfs/errors";
-import { closeVm, withVm } from "./helpers/vm-fixture";
+import { closeVm, withVm, shouldSkipVmTests } from "./helpers/vm-fixture";
 
+const skipVmTests = shouldSkipVmTests();
 const timeoutMs = Number(process.env.WS_TIMEOUT ?? 15000);
 const { errno: ERRNO } = os.constants;
 
@@ -78,7 +79,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   }
 }
 
-test("vfs roundtrip between host and guest", { timeout: timeoutMs }, async () => {
+test("vfs roundtrip between host and guest", { skip: skipVmTests, timeout: timeoutMs }, async () => {
   await withVm(sharedVmKey, sharedVmOptions, async (vm) => {
     const handle = await rootProvider.open("/host.txt", "w+");
     await handle.writeFile("host-data");
@@ -122,7 +123,7 @@ test("vfs roundtrip between host and guest", { timeout: timeoutMs }, async () =>
   });
 });
 
-test("vfs hooks can block writes", { timeout: timeoutMs }, async () => {
+test("vfs hooks can block writes", { skip: skipVmTests, timeout: timeoutMs }, async () => {
   blockedEntries.length = 0;
 
   await withVm(sharedVmKey, sharedVmOptions, async (vm) => {
@@ -139,7 +140,7 @@ test("vfs hooks can block writes", { timeout: timeoutMs }, async () => {
   assert.ok(blockedEntries.some((entry) => entry.startsWith("/blocked.txt:")));
 });
 
-test("fuse-backed /data triggers hooks for guest file operations", { timeout: timeoutMs }, async () => {
+test("fuse-backed /data triggers hooks for guest file operations", { skip: skipVmTests, timeout: timeoutMs }, async () => {
   fuseHookEvents.length = 0;
 
   await withVm(fuseVmKey, fuseVmOptions, async (vm) => {
@@ -186,7 +187,7 @@ test("fuse-backed /data triggers hooks for guest file operations", { timeout: ti
   assert.ok(fuseHookEvents.some((event) => event.op === "unlink" && event.path === renamedPath));
 });
 
-test("vfs supports read-only email mounts with dynamic content", { timeout: timeoutMs }, async () => {
+test("vfs supports read-only email mounts with dynamic content", { skip: skipVmTests, timeout: timeoutMs }, async () => {
   const emailId = "12345";
   const emailBody = "Subject: Hello\nFrom: test@example.com\n\nHi there!";
   const apiCalls: string[] = [];
@@ -321,7 +322,7 @@ test("ReadonlyProvider blocks write operations", { timeout: timeoutMs }, async (
   );
 });
 
-test("ReadonlyProvider works in VM guest", { timeout: timeoutMs }, async () => {
+test("ReadonlyProvider works in VM guest", { skip: skipVmTests, timeout: timeoutMs }, async () => {
   await withVm(sharedVmKey, sharedVmOptions, async (vm) => {
     const handle = await roInnerProvider.open("/host-file.txt", "w+");
     await handle.writeFile("read-only data from host");
