@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import crypto from "node:crypto";
+import tls from "node:tls";
 
 import forge from "node-forge";
 
@@ -186,6 +187,105 @@ test("qemu-net: handleHttpDataWithWriter sends 100-continue when body is pending
   );
 
   assert.ok(Buffer.concat(writes).toString("ascii").includes("100 Continue"));
+});
+
+test("qemu-net: handleHttpDataWithWriter sends 100-continue for supported chunked bodies", async () => {
+  const backend = makeBackend({ maxHttpBodyBytes: 1024 });
+
+  const writes: Buffer[] = [];
+  const session: any = { http: undefined };
+
+  await (backend as any).handleHttpDataWithWriter(
+    "key",
+    session,
+    Buffer.from(
+      "POST / HTTP/1.1\r\n" +
+        "Host: example.com\r\n" +
+        "Expect: 100-continue\r\n" +
+        "Transfer-Encoding: chunked\r\n" +
+        "\r\n" +
+        "1\r\n" +
+        "h\r\n"
+    ),
+    {
+      scheme: "http",
+      write: (chunk: Buffer) => writes.push(Buffer.from(chunk)),
+      finish: () => {
+        throw new Error("unexpected finish");
+      },
+    }
+  );
+
+  assert.ok(Buffer.concat(writes).toString("ascii").includes("100 Continue"));
+});
+
+test("qemu-net: handleHttpDataWithWriter enforces MAX_HTTP_PIPELINE_BYTES for chunked requests", async () => {
+  const backend = makeBackend({ maxHttpBodyBytes: 1024 });
+
+  const writes: Buffer[] = [];
+  const session: any = { http: undefined };
+  let finished = false;
+
+  const pipelineJunk = Buffer.alloc(__test.MAX_HTTP_PIPELINE_BYTES + 1, 0x61); // 'a'
+
+  await (backend as any).handleHttpDataWithWriter(
+    "key",
+    session,
+    Buffer.concat([
+      Buffer.from(
+        "POST / HTTP/1.1\r\n" +
+          "Host: example.com\r\n" +
+          "Transfer-Encoding: chunked\r\n" +
+          "\r\n" +
+          "0\r\n\r\n"
+      ),
+      pipelineJunk,
+    ]),
+    {
+      scheme: "http",
+      write: (chunk: Buffer) => writes.push(Buffer.from(chunk)),
+      finish: () => {
+        finished = true;
+      },
+    }
+  );
+
+  assert.ok(finished);
+  assert.ok(session.http.closed);
+  const output = Buffer.concat(writes).toString("ascii");
+  assert.ok(output.includes("413 Payload Too Large"));
+});
+
+test("qemu-net: handleHttpDataWithWriter does not send 100-continue for unsupported transfer-encoding", async () => {
+  const backend = makeBackend({ maxHttpBodyBytes: 1024 });
+
+  const writes: Buffer[] = [];
+  const session: any = { http: undefined };
+  let finished = false;
+
+  await (backend as any).handleHttpDataWithWriter(
+    "key",
+    session,
+    Buffer.from(
+      "POST / HTTP/1.1\r\n" +
+        "Host: example.com\r\n" +
+        "Expect: 100-continue\r\n" +
+        "Transfer-Encoding: gzip\r\n" +
+        "\r\n"
+    ),
+    {
+      scheme: "http",
+      write: (chunk: Buffer) => writes.push(Buffer.from(chunk)),
+      finish: () => {
+        finished = true;
+      },
+    }
+  );
+
+  assert.ok(finished);
+  const output = Buffer.concat(writes).toString("ascii");
+  assert.ok(!output.includes("100 Continue"));
+  assert.ok(output.includes("501 Not Implemented"));
 });
 
 test("qemu-net: parseHttpRequest returns 417 for unsupported Expect tokens", () => {
@@ -829,4 +929,141 @@ test("qemu-net: TLS MITM generates leaf certificates per host", async () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("qemu-net: tls context cache enforces max entries (LRU)", async () => {
+  const backend = makeBackend({
+    // keep it tiny for the test
+    tlsContextCacheMaxEntries: 3,
+    tlsContextCacheTtlMs: 60_000,
+  });
+
+  // Avoid slow leaf cert generation; we're only testing eviction logic.
+  let created = 0;
+  (backend as any).createTlsContext = async (_servername: string) => {
+    created += 1;
+    return tls.createSecureContext({});
+  };
+
+  await (backend as any).getTlsContextAsync("a.example");
+  await (backend as any).getTlsContextAsync("b.example");
+  await (backend as any).getTlsContextAsync("c.example");
+
+  assert.equal((backend as any).tlsContexts.size, 3);
+
+  // Touch b to make it most-recently-used, then insert d and ensure a is evicted.
+  await (backend as any).getTlsContextAsync("b.example");
+  await (backend as any).getTlsContextAsync("d.example");
+
+  const keys = Array.from((backend as any).tlsContexts.keys());
+  assert.equal(keys.length, 3);
+  assert.ok(!keys.includes("a.example"));
+  assert.ok(keys.includes("b.example"));
+  assert.ok(keys.includes("c.example"));
+  assert.ok(keys.includes("d.example"));
+
+  // Should have created contexts for a,b,c,d (touching b is cached)
+  assert.equal(created, 4);
+});
+
+test("qemu-net: tls context cache ttl does not immediately expire slow-to-create entries", async () => {
+  const backend = makeBackend({
+    tlsContextCacheMaxEntries: 100,
+    // Keep this comfortably larger than the immediate follow-up access to avoid timing flakes.
+    tlsContextCacheTtlMs: 100,
+  });
+
+  // Simulate a slow context creation that takes longer than the TTL.
+  let created = 0;
+  (backend as any).createTlsContext = async (_servername: string) => {
+    created += 1;
+    await new Promise((r) => setTimeout(r, 150));
+    return tls.createSecureContext({});
+  };
+
+  await (backend as any).getTlsContextAsync("slow.example");
+  assert.equal(created, 1);
+
+  // Immediate follow-up access should still hit the cache.
+  await (backend as any).getTlsContextAsync("slow.example");
+  assert.equal(created, 1);
+});
+
+test("qemu-net: tls context cache enforces ttl", async () => {
+  const backend = makeBackend({
+    tlsContextCacheMaxEntries: 100,
+    tlsContextCacheTtlMs: 50,
+  });
+
+  let created = 0;
+  (backend as any).createTlsContext = async (_servername: string) => {
+    created += 1;
+    return tls.createSecureContext({});
+  };
+
+  await (backend as any).getTlsContextAsync("ttl.example");
+  assert.equal(created, 1);
+
+  // Let the entry expire.
+  await new Promise((r) => setTimeout(r, 80));
+
+  await (backend as any).getTlsContextAsync("ttl.example");
+  assert.equal(created, 2);
+});
+
+test("qemu-net: tls context cache ttl <= 0 disables caching", async () => {
+  const backend = makeBackend({
+    tlsContextCacheMaxEntries: 100,
+    tlsContextCacheTtlMs: 0,
+  });
+
+  let created = 0;
+  (backend as any).createTlsContext = async (_servername: string) => {
+    created += 1;
+    return tls.createSecureContext({});
+  };
+
+  await (backend as any).getTlsContextAsync("a.example");
+  await (backend as any).getTlsContextAsync("a.example");
+  assert.equal(created, 2);
+
+  await (backend as any).getTlsContextAsync("b.example");
+  assert.equal(created, 3);
+
+  // Cache is cleared on each access, so it can't accumulate entries.
+  assert.equal((backend as any).tlsContexts.size, 1);
+});
+
+test("qemu-net: caps guest->upstream pendingWrites and aborts on overflow", () => {
+  const backend = makeBackend({ maxTcpPendingWriteBytes: 16 });
+
+  // Avoid trying to connect a real TCP socket.
+  (backend as any).ensureTcpSocket = () => {};
+
+  const stackCalls: any[] = [];
+  (backend as any).stack = {
+    handleTcpError: (msg: any) => stackCalls.push(msg),
+  };
+
+  const key = "TCP:1.2.3.4:111:5.6.7.8:222";
+  (backend as any).tcpSessions.set(key, {
+    socket: null,
+    srcIP: "1.2.3.4",
+    srcPort: 111,
+    dstIP: "5.6.7.8",
+    dstPort: 222,
+    connectIP: "5.6.7.8",
+    flowControlPaused: false,
+    protocol: null,
+    connected: false,
+    pendingWrites: [],
+    pendingWriteBytes: 0,
+  });
+
+  // 32 bytes > cap (16) triggers abort.
+  (backend as any).handleTcpSend({ key, data: Buffer.alloc(32) });
+
+  assert.equal(stackCalls.length, 1);
+  assert.deepEqual(stackCalls[0], { key });
+  assert.equal((backend as any).tcpSessions.has(key), false);
 });
