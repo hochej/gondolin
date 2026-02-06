@@ -19,6 +19,9 @@ import { Agent, fetch as undiciFetch } from "undici";
 const MAX_HTTP_REDIRECTS = 10;
 const MAX_HTTP_HEADER_BYTES = 64 * 1024;
 export const DEFAULT_MAX_HTTP_BODY_BYTES = 64 * 1024 * 1024;
+// Default cap for buffering upstream HTTP *responses* (not streaming).
+// This primarily applies when httpHooks.onResponse is installed.
+export const DEFAULT_MAX_HTTP_RESPONSE_BODY_BYTES = DEFAULT_MAX_HTTP_BODY_BYTES;
 
 type FetchResponse = Awaited<ReturnType<typeof undiciFetch>>;
 
@@ -197,8 +200,10 @@ export type QemuNetworkOptions = {
   httpHooks?: HttpHooks;
   /** mitm ca directory path */
   mitmCertDir?: string;
-  /** max intercepted http body size in `bytes` */
+  /** max intercepted http request body size in `bytes` */
   maxHttpBodyBytes?: number;
+  /** max buffered upstream http response body size in `bytes` */
+  maxHttpResponseBodyBytes?: number;
 };
 
 type CaCert = {
@@ -223,6 +228,7 @@ export class QemuNetworkBackend extends EventEmitter {
   private icmpRxBuffer = Buffer.alloc(0);
   private eventLoopDelay: ReturnType<typeof monitorEventLoopDelay> | null = null;
   private readonly maxHttpBodyBytes: number;
+  private readonly maxHttpResponseBodyBytes: number;
 
   constructor(private readonly options: QemuNetworkOptions) {
     super();
@@ -232,6 +238,8 @@ export class QemuNetworkBackend extends EventEmitter {
     }
     this.mitmDir = resolveMitmCertDir(options.mitmCertDir);
     this.maxHttpBodyBytes = options.maxHttpBodyBytes ?? DEFAULT_MAX_HTTP_BODY_BYTES;
+    this.maxHttpResponseBodyBytes =
+      options.maxHttpResponseBodyBytes ?? DEFAULT_MAX_HTTP_RESPONSE_BODY_BYTES;
   }
 
   start() {
@@ -1340,7 +1348,37 @@ export class QemuNetworkBackend extends EventEmitter {
           return;
         }
 
-        const responseBody = Buffer.from(await response.arrayBuffer());
+        const maxResponseBytes = this.maxHttpResponseBodyBytes;
+
+        // Fast-path rejection when the upstream response declares a length that
+        // is already beyond what we're willing to buffer.
+        if (hasValidLength && !contentEncoding && parsedLength! > maxResponseBytes) {
+          if (responseBodyStream) {
+            try {
+              await responseBodyStream.cancel();
+            } catch {
+              // ignore cancellation failures
+            }
+          }
+          throw new HttpRequestBlockedError(
+            `response body exceeds ${maxResponseBytes} bytes`,
+            502,
+            "Bad Gateway"
+          );
+        }
+
+        const responseBody = responseBodyStream
+          ? await this.bufferResponseBodyWithLimit(responseBodyStream, maxResponseBytes)
+          : Buffer.from(await response.arrayBuffer());
+
+        if (responseBody.length > maxResponseBytes) {
+          throw new HttpRequestBlockedError(
+            `response body exceeds ${maxResponseBytes} bytes`,
+            502,
+            "Bad Gateway"
+          );
+        }
+
         responseHeaders["content-length"] = responseBody.length.toString();
 
         let hookResponse: HttpHookResponse = {
@@ -1416,6 +1454,43 @@ export class QemuNetworkBackend extends EventEmitter {
     } finally {
       reader.releaseLock();
     }
+  }
+
+  private async bufferResponseBodyWithLimit(
+    body: WebReadableStream<Uint8Array>,
+    maxBytes: number
+  ): Promise<Buffer> {
+    const reader = body.getReader();
+    const chunks: Buffer[] = [];
+    let total = 0;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value || value.length === 0) continue;
+
+        if (total + value.length > maxBytes) {
+          try {
+            await reader.cancel();
+          } catch {
+            // ignore cancellation failures
+          }
+          throw new HttpRequestBlockedError(
+            `response body exceeds ${maxBytes} bytes`,
+            502,
+            "Bad Gateway"
+          );
+        }
+
+        total += value.length;
+        chunks.push(Buffer.from(value));
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    return chunks.length === 0 ? Buffer.alloc(0) : Buffer.concat(chunks, total);
   }
 
   private respondWithError(write: (chunk: Buffer) => void, status: number, statusText: string) {

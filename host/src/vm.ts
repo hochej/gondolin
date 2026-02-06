@@ -93,8 +93,10 @@ export type VMOptions = {
   fetch?: HttpFetch;
   /** http interception hooks */
   httpHooks?: HttpHooks;
-  /** max intercepted http body size in `bytes` */
+  /** max intercepted http request body size in `bytes` */
   maxHttpBodyBytes?: number;
+  /** max buffered upstream http response body size in `bytes` */
+  maxHttpResponseBodyBytes?: number;
   /** vfs configuration (null disables vfs integration) */
   vfs?: VmVfsOptions | null;
   /** default environment variables */
@@ -171,6 +173,12 @@ export class VM {
     if (options.maxHttpBodyBytes !== undefined && serverOptions.maxHttpBodyBytes === undefined) {
       serverOptions.maxHttpBodyBytes = options.maxHttpBodyBytes;
     }
+    if (
+      options.maxHttpResponseBodyBytes !== undefined &&
+      (serverOptions as any).maxHttpResponseBodyBytes === undefined
+    ) {
+      (serverOptions as any).maxHttpResponseBodyBytes = options.maxHttpResponseBodyBytes;
+    }
     if (options.memory && serverOptions.memory === undefined) {
       serverOptions.memory = options.memory;
     }
@@ -244,6 +252,12 @@ export class VM {
     }
     if (options.maxHttpBodyBytes !== undefined && serverOptions.maxHttpBodyBytes === undefined) {
       serverOptions.maxHttpBodyBytes = options.maxHttpBodyBytes;
+    }
+    if (
+      options.maxHttpResponseBodyBytes !== undefined &&
+      (serverOptions as any).maxHttpResponseBodyBytes === undefined
+    ) {
+      (serverOptions as any).maxHttpResponseBodyBytes = options.maxHttpResponseBodyBytes;
     }
     if (this.vfs && serverOptions.vfsProvider === undefined) {
       serverOptions.vfsProvider = this.vfs;

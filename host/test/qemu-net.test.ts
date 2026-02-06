@@ -521,6 +521,123 @@ test("qemu-net: fetchAndRespond streams chunked body when length unknown/encoded
   assert.ok(bodyText.includes("0\r\n\r\n"));
 });
 
+test("qemu-net: fetchAndRespond enforces maxHttpResponseBodyBytes when buffering for onResponse (known length)", async () => {
+  let cancelled = false;
+  let hookCalls = 0;
+
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("hello"));
+      controller.close();
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+
+  const fetchMock = async () => {
+    return new Response(body, {
+      status: 200,
+      headers: { "content-length": "5" },
+    });
+  };
+
+  const backend = makeBackend({
+    fetch: fetchMock as any,
+    maxHttpResponseBodyBytes: 4,
+    httpHooks: {
+      isAllowed: () => true,
+      onResponse: async (resp) => {
+        hookCalls += 1;
+        return resp;
+      },
+    },
+  });
+  (backend as any).resolveHostname = async () => ({ address: "203.0.113.10", family: 4 });
+
+  const request = {
+    method: "GET",
+    target: "/",
+    version: "HTTP/1.1",
+    headers: { host: "example.com" },
+    body: Buffer.alloc(0),
+  };
+
+  await assert.rejects(
+    () => (backend as any).fetchAndRespond(request, "http", () => {}),
+    (err: unknown) => err instanceof HttpRequestBlockedError && err.status === 502
+  );
+
+  assert.equal(hookCalls, 0);
+  assert.equal(cancelled, true);
+});
+
+test("qemu-net: fetchAndRespond enforces maxHttpResponseBodyBytes when buffering for onResponse (encoded/unknown length)", async () => {
+  let cancelled = false;
+  let hookCalls = 0;
+
+  let step = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (step === 0) {
+        step += 1;
+        controller.enqueue(new TextEncoder().encode("he"));
+        return;
+      }
+      if (step === 1) {
+        step += 1;
+        // Keep the stream open so cancellation is observable.
+        controller.enqueue(new TextEncoder().encode("llo"));
+        return;
+      }
+      // If the implementation failed to cancel, we would keep producing data.
+      controller.enqueue(new TextEncoder().encode("more"));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+
+  const fetchMock = async () => {
+    return new Response(body, {
+      status: 200,
+      headers: {
+        // triggers the content-encoding stripping path; we still buffer due to onResponse.
+        "content-encoding": "gzip",
+      },
+    });
+  };
+
+  const backend = makeBackend({
+    fetch: fetchMock as any,
+    maxHttpResponseBodyBytes: 4,
+    httpHooks: {
+      isAllowed: () => true,
+      onResponse: async (resp) => {
+        hookCalls += 1;
+        return resp;
+      },
+    },
+  });
+  (backend as any).resolveHostname = async () => ({ address: "203.0.113.11", family: 4 });
+
+  const request = {
+    method: "GET",
+    target: "/",
+    version: "HTTP/1.1",
+    headers: { host: "example.com" },
+    body: Buffer.alloc(0),
+  };
+
+  await assert.rejects(
+    () => (backend as any).fetchAndRespond(request, "http", () => {}),
+    (err: unknown) => err instanceof HttpRequestBlockedError && err.status === 502
+  );
+
+  assert.equal(hookCalls, 0);
+  assert.equal(cancelled, true);
+});
+
 test("qemu-net: createLookupGuard filters DNS results via isAllowed", async () => {
   // Fake DNS returns a private + public address when `all: true`, but only
   // a private address for the single-result lookup.

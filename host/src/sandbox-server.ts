@@ -27,7 +27,11 @@ import {
   ServerMessage,
 } from "./control-protocol";
 import { SandboxController, SandboxConfig, SandboxState } from "./sandbox-controller";
-import { QemuNetworkBackend, DEFAULT_MAX_HTTP_BODY_BYTES } from "./qemu-net";
+import {
+  QemuNetworkBackend,
+  DEFAULT_MAX_HTTP_BODY_BYTES,
+  DEFAULT_MAX_HTTP_RESPONSE_BODY_BYTES,
+} from "./qemu-net";
 import type { HttpFetch, HttpHooks } from "./qemu-net";
 import { FsRpcService, SandboxVfsProvider, type VirtualProvider } from "./vfs";
 import { parseDebugEnv } from "./debug";
@@ -105,8 +109,10 @@ export type SandboxServerOptions = {
   fetch?: HttpFetch;
   /** http interception hooks */
   httpHooks?: HttpHooks;
-  /** max intercepted http body size in `bytes` */
+  /** max intercepted http request body size in `bytes` */
   maxHttpBodyBytes?: number;
+  /** max buffered upstream http response body size in `bytes` */
+  maxHttpResponseBodyBytes?: number;
   /** mitm ca directory path */
   mitmCertDir?: string;
   /** vfs provider to expose under the fuse mount */
@@ -157,8 +163,10 @@ export type ResolvedSandboxServerOptions = {
   append?: string;
   /** max stdin buffered per process in `bytes` */
   maxStdinBytes: number;
-  /** max intercepted http body size in `bytes` */
+  /** max intercepted http request body size in `bytes` */
   maxHttpBodyBytes: number;
+  /** max buffered upstream http response body size in `bytes` */
+  maxHttpResponseBodyBytes: number;
   /** http fetch implementation for asset downloads */
   fetch?: HttpFetch;
   /** http interception hooks */
@@ -351,6 +359,8 @@ export function resolveSandboxServerOptions(
     append: options.append,
     maxStdinBytes: options.maxStdinBytes ?? DEFAULT_MAX_STDIN_BYTES,
     maxHttpBodyBytes: options.maxHttpBodyBytes ?? DEFAULT_MAX_HTTP_BODY_BYTES,
+    maxHttpResponseBodyBytes:
+      options.maxHttpResponseBodyBytes ?? DEFAULT_MAX_HTTP_RESPONSE_BODY_BYTES,
     fetch: options.fetch,
     httpHooks: options.httpHooks,
     mitmCertDir: options.mitmCertDir,
@@ -726,8 +736,10 @@ export class SandboxServer extends EventEmitter {
     const isResolved =
       "maxStdinBytes" in options &&
       "maxHttpBodyBytes" in options &&
+      "maxHttpResponseBodyBytes" in options &&
       typeof options.maxStdinBytes === "number" &&
-      typeof options.maxHttpBodyBytes === "number";
+      typeof options.maxHttpBodyBytes === "number" &&
+      typeof (options as any).maxHttpResponseBodyBytes === "number";
     this.options = isResolved
       ? (options as ResolvedSandboxServerOptions)
       : resolveSandboxServerOptions(options as SandboxServerOptions);
@@ -789,6 +801,7 @@ export class SandboxServer extends EventEmitter {
           httpHooks: this.options.httpHooks,
           mitmCertDir: this.options.mitmCertDir,
           maxHttpBodyBytes: this.options.maxHttpBodyBytes,
+          maxHttpResponseBodyBytes: this.options.maxHttpResponseBodyBytes,
         })
       : null;
 
