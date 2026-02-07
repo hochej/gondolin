@@ -6,7 +6,7 @@ Gondolin ships with a small command line interface (CLI) that lets you:
 - run one or more commands non-interactively (`exec`)
 - build and verify custom guest assets (`build`)
 
-## Installation / running
+## Installation / Running
 
 If you don't want to install anything globally, use `npx`:
 
@@ -30,12 +30,12 @@ Guest assets (kernel/initramfs/rootfs, ~200MB) are downloaded automatically on
 first use and cached in `~/.cache/gondolin/`.  Alternative you can [build and
 ship your own](./custom-images.md).
 
-## Common options (VFS + network)
+## Common Options (VFS + Network)
 
 Both `gondolin bash` and `gondolin exec` (VM mode) support the same set of
 options for configuring filesystem mounts and HTTP egress policy.
 
-### VFS (filesystem) options
+### VFS (Filesystem) Options
 
 - `--mount-hostfs HOST_DIR:GUEST_PATH[:ro]`
   - Mount a host directory into the guest at `GUEST_PATH`
@@ -55,7 +55,7 @@ gondolin bash --mount-hostfs "$PWD:/workspace"
 gondolin exec --mount-hostfs /data:/data:ro --mount-memfs /tmp -- ls -la /data
 ```
 
-### Network options (HTTP allowlist + secret injection)
+### Network Options (HTTP Allowlist + Secret Injection)
 
 Gondolin's network bridge only forwards HTTP/HTTPS traffic.  Requests are
 intercepted on the host side, which allows enforcing host allowlists and
@@ -116,7 +116,7 @@ gondolin bash \
 
 Run one or more commands and exit.
 
-### VM mode (default)
+### VM Mode (Default)
 
 Without `--sock`, `gondolin exec` creates a VM, runs the command(s), prints
 stdout/stderr, and exits with the command's exit code:
@@ -135,7 +135,7 @@ gondolin exec -- uname -a
 gondolin exec --mount-hostfs "$PWD:/workspace" -- sh -lc 'cd /workspace && npm test'
 ```
 
-### Multi-command form
+### Multi-Command Form
 
 You can provide multiple commands using `--cmd` (each command can have its own args/env/cwd):
 
@@ -152,7 +152,7 @@ Per-command flags apply to the most recent `--cmd`:
 - `--cwd PATH` -- set working directory
 - `--id N` -- set a request id (mainly useful with `--sock`)
 
-### Socket mode (advanced)
+### Socket Mode (Advanced)
 
 If you already have a running sandbox server and a virtio control socket path,
 you can send exec requests without creating a VM:
@@ -201,7 +201,7 @@ gondolin build --verify ./my-assets
 For a full configuration reference and build requirements, see:
 [Building Custom Images](./custom-images.md).
 
-## Environment variables
+## Environment Variables
 
 - `GONDOLIN_GUEST_DIR`
   - Directory containing guest assets (`manifest.json`, kernel, initramfs, rootfs)

@@ -6,7 +6,7 @@ port you can connect to with your regular `ssh` client.
 This is mainly intended for interactive debugging, ad-hoc inspection, and
 tooling that expects SSH.
 
-## What `enableSsh()` does
+## What `enableSsh()` Does
 
 When you call `vm.enableSsh()`:
 
@@ -26,7 +26,7 @@ The returned `SshAccess` includes:
 - `command`: a ready-to-run `ssh` command string
 - `close()`: shuts down the local forwarder and removes the temporary key material
 
-## SDK usage
+## SDK Usage
 
 ```ts
 import { VM } from "@earendil-works/gondolin";
@@ -57,7 +57,7 @@ const access = await vm.enableSsh({ user: "sandbox" });
 Gondolin will install `authorized_keys` into that user's home directory (from
 `getent passwd` or `/etc/passwd`).
 
-## Client command hardening
+## Client Command Hardening
 
 The `access.command` string explicitly disables features that can create host
 backchannels or leak credentials if your local SSH config enables them:
@@ -76,7 +76,7 @@ For fully non-interactive use, you may also want:
 - `-o BatchMode=yes`
 - `-o LogLevel=ERROR`
 
-## Server side hardening
+## Server Side Hardening
 
 The guest `sshd` is started with additional restrictions:
 
@@ -90,7 +90,7 @@ The guest `sshd` is started with additional restrictions:
 This is defense in depth so it stays safe even if a user runs their own `ssh`
 command without the recommended options.
 
-## Notes and limitations
+## Notes and Limitations
 
 - The guest image must include `sshd` (OpenSSH) and `sandboxssh`. Default images
   are expected to include them.

@@ -1,4 +1,4 @@
-# Gondolin
+# Gondolin Agent Sandbox
 
 **Local Linux micro-VMs with a fully programmable network stack and filesystem.**
 
@@ -18,17 +18,19 @@ over what the sandbox can access and what secrets it can use.
 import { VM, createHttpHooks } from "@earendil-works/gondolin";
 
 const { httpHooks, env } = createHttpHooks({
-  allowedHosts: ["api.openai.com"],
+  allowedHosts: ["api.github.com"],
   secrets: {
-    OPENAI_API_KEY: {
-      hosts: ["api.openai.com"],
-      value: process.env.OPENAI_API_KEY,
+    GITHUB_TOKEN: {
+      hosts: ["api.github.com"],
+      value: process.env.GITHUB_TOKEN,
     },
   },
 });
 
 const vm = await VM.create({ httpHooks, env });
-await vm.exec("curl -H \"Authorization: Bearer $OPENAI_API_KEY\" https://api.openai.com/v1/models");
+const result = await vm.exec("\
+  curl -H \"Authorization: Bearer $GITHUB_TOKEN\" \
+  https://api.github.com/user");
 await vm.close();
 ```
 
@@ -113,7 +115,7 @@ In the design of Gondolin we made various architectural choices that require ela
   binaries and allows trivial cross compilation.  The host is written in TypeScript
   because it allows plugging in custom behavior trivially for the VM.
 
-## Repository guides
+## Repository Guides
 
 - [Host package](host/README.md) — installation, CLI quick start, and a TypeScript example
 - [Guest sandbox](guest/README.md) — Zig build, initramfs/image pipeline, and development notes

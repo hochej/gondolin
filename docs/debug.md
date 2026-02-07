@@ -4,11 +4,11 @@ Gondolin's host has several debug channels that can be enabled independently.
 Debug output is routed through a callback so you can capture it in your own
 code.
 
-## Enabling debug modes
+## Enabling Debug Modes
 
 There are two ways to control debugging.
 
-### Environment variable
+### Environment Variable
 
 Set `GONDOLIN_DEBUG` to a comma-separated list of flags:
 
@@ -47,7 +47,7 @@ const vm = await VM.create({
 });
 ```
 
-## Intercepting debug output
+## Intercepting Debug Output
 
 When any debug mode is enabled, the VM will emit debug messages to a callback:
 

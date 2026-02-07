@@ -8,13 +8,13 @@ Gondolin's core idea is that *"untrusted code runs in a real Linux VM, but the
 VM's *I/O surface area* (network + persistence) is mediated by host code you
 control."*
 
-## Scope and goals
+## Scope and Goals
 
 Gondolin exists to provide a playground for an agent to work with.  Agents are
 tricky because they are great reverse engineers and given the right prompts, they
 can be quite inventive in trying to escape their sandboxes.
 
-### Primary goal
+### Primary Goal
 Run potentially untrusted / prompt-injected code (typically agent-generated) while:
 
 1. **Preventing credential theft** (secrets should not be readable from inside the guest)
@@ -25,7 +25,7 @@ Run potentially untrusted / prompt-injected code (typically agent-generated) whi
 In particular *all* of the injected file system is controllable.  This means the host can
 fully change how folders behave, not just bind it to different folders on the real file system.
 
-### Non-goals
+### Non-Goals
 
 Gondolin is not trying to defend against:
 
@@ -38,7 +38,7 @@ Gondolin is not trying to defend against:
   the VM, or cause large amounts of host work (there are some buffer caps, but no
   complete DoS isolation).
 
-## Threat model
+## Threat Model
 
 These are the primary threats this design attempts to protect against.
 
@@ -52,21 +52,21 @@ internet. For instance, because they want to implement something like the CaMeL
 approach.  However, we make little assumption in the system about how exactly
 the trust is divided.
 
-### Assets we want to protect
+### Assets We Want to Protect
 - **Host secrets** (API keys, tokens) supplied to the host application
 - **Host network** (localhost services, cloud metadata endpoints, internal RFC1918 ranges)
 - **Host filesystem** (unless explicitly mounted)
 
-### Trust assumptions
+### Trust Assumptions
 - The host process (your Node runtime + Gondolin library) is trusted.
 - The guest image is trusted *to the extent you trust its supply chain*.
 - The VM boundary provided by QEMU is trusted.
 
-## System architecture and trust boundaries
+## System Architecture and Trust Boundaries
 
 This is a rough overview of the system today.
 
-### High-level components
+### High-Level Components
 
 - **Host (TypeScript)**
   - `SandboxController` spawns and manages QEMU
@@ -80,7 +80,7 @@ This is a rough overview of the system today.
   - `sandboxssh` is a dedicated virtio-serial TCP forwarder for *loopback-only* connections inside the guest
   - `/init` sets up tmpfs mounts, networking, starts `sandboxfs`, then starts `sandboxd`
 
-### Trust boundaries
+### Trust Boundaries
 
 ```
 +----------------------------- Host machine ------------------------------+
@@ -102,11 +102,11 @@ This is a rough overview of the system today.
 
 The **guest is treated as adversarial**. The host is the policy enforcement point.
 
-## Security guarantees
+## Security Guarantees
 
 This is what Gondolin actually enforces.
 
-### Compute isolation
+### Compute Isolation
 
 > "guest code does not directly run on the host OS"
 
@@ -120,7 +120,7 @@ This is what Gondolin actually enforces.
 **Guarantee:** absent a QEMU escape, guest processes cannot directly access the
 *host kernel, host memory, or host filesystem.
 
-### Network egress confinement
+### Network Egress Confinement
 
 > "only HTTP + TLS is permitted, and only to allowed destinations"
 
@@ -177,7 +177,7 @@ fully disregarded by the HTTP stack as the host will resolve it from scratch.
 
 ICMP ECHOs are supported by made up.  Any IP can be pinged.
 
-### Secret non-exposure
+### Secret Non-Exposure
 
 > "real secret values never appear inside the guest"
 
@@ -197,7 +197,7 @@ read the real secret values from its process environment, disk, or memory
 because they never enter the VM.  However that does not fully protect the system
 if there are ways to utilize the target server to echo the secrets back!
 
-### Filesystem confinement
+### Filesystem Confinement
 
 > "host filesystem access is explicit and programmable"
 
@@ -228,7 +228,7 @@ The programmable filesystem path is:
 **Guarantee:** the guest cannot access host files unless you mount them through
 a provider.
 
-### Controlled "backchannels"
+### Controlled "Backchannels"
 
 `SandboxServer.openTcpStream()` opens a TCP stream to a service inside the guest
 using a dedicated virtio-serial port (`virtio-ssh`).
@@ -242,11 +242,11 @@ host <-> guest control feature.
 **Guarantee:** this API cannot be used to reach arbitrary guest network
 destinations; it only reaches services bound to guest loopback.
 
-## Why the design is secure
+## Why the Design Is Secure
 
 Secure here means secure within our design goals.
 
-### Minimize the attack surface
+### Minimize the Attack Surface
 
 Instead of trying to safely pass through a full network stack and hope that
 firewalling is correct, Gondolin narrows egress to a small set of patterns:
@@ -262,7 +262,7 @@ This means:
 - No SSH/SOCKS/VPN/proxy protocols
 - No custom binary protocols
 
-### Make the host the policy enforcement point
+### Make the Host the Policy Enforcement Point
 Because the host replays HTTP requests via `fetch`, the host can:
 
 - Enforce allowlists by hostname
@@ -272,7 +272,7 @@ Because the host replays HTTP requests via `fetch`, the host can:
 
 The guest can ask for things, but it does not get to choose how packets are emitted.
 
-### Secrets are never placed in the guest's possession
+### Secrets Are Never Placed in the Guest's Possession
 
 From a secrets perspective, the strongest way to prevent exfiltration is: **do
 not deliver the secret to the untrusted environment**.
@@ -280,11 +280,11 @@ not deliver the secret to the untrusted environment**.
 Gondolin's placeholder substitution ensures the guest can *reference* a secret
 (to make legitimate calls) without being able to *read* it.
 
-## Operating within the "safe envelope"
+## Operating Within the "Safe Envelope"
 
 These are rules to not compromise the security guarantees of the system:
 
-### Network policy
+### Network Policy
 
 1. **Use an allowlist; avoid `*`**
   - Prefer exact hosts (`api.github.com`) over wildcards (`*.github.com`).
@@ -316,7 +316,7 @@ These are rules to not compromise the security guarantees of the system:
   - Placeholders are random and not the secret, but the guest can still transmit them.
   - Your security relies on the fact that placeholders are useless without host substitution.
 
-### Filesystem mounts
+### Filesystem Mounts
 
 1. **Default to `MemoryProvider` for `/workspace`-style scratch space**
 2. **Use `ReadonlyProvider(RealFSProvider(...))` for host directories you must expose**
@@ -326,7 +326,7 @@ These are rules to not compromise the security guarantees of the system:
   - Gondolin automatically injects a read-only CA cert mount at `/etc/ssl/certs`
     unless you already mounted that path.
 
-### TLS MITM CA handling
+### TLS MITM CA Handling
 
 - Gondolin generates a local CA under `~/.cache/gondolin/ssl` (or `XDG_CACHE_HOME`).
 - The CA cert is injected into the guest at `/etc/ssl/certs/ca-certificates.crt`
@@ -336,7 +336,7 @@ Operational guidance:
 - Treat the CA private key as sensitive (it can sign certs trusted by the guest).
 - If you want per-run isolation, point `mitmCertDir` at a temporary directory.
 
-### Guest images and supply chain
+### Guest Images and Supply Chain
 
 - Default assets are downloaded from GitHub releases over HTTPS
 (`host/src/assets.ts`).
@@ -347,9 +347,9 @@ Guidance:
 - For high assurance, build images yourself and verify checksums.
 - Keep QEMU up to date; the VM boundary is fundamental.
 
-## Known limitations and sharp edges
+## Known Limitations and Sharp Edges
 
-### "Only HTTP/TLS" is not the same as "safe networking"
+### "Only HTTP/TLS" Is Not the Same as "Safe Networking"
 - If you allow `api.example.com`, malicious guest code can still send *any* data
   it can read to that host.
 - Servers that can echo headers back (eg: httpbin) can be used to exfiltrate secrets.
@@ -357,10 +357,10 @@ Guidance:
   destinations and limit protocol abuse, not to prevent exfiltration to an allowed
   destination.
 
-### VM escape risk
+### VM Escape Risk
 - The strongest guarantee depends on QEMU isolation.
 
-### Local host attacker
+### Local Host Attacker
 - Virtio Unix sockets are created in a temp directory.  A local attacker with the
   same user privileges can typically interfere.
 

@@ -211,7 +211,7 @@ checksums for verification.
 
 ## Troubleshooting
 
-### "mke2fs: command not found"
+### `mke2fs`: Command Not Found
 
 Install e2fsprogs:
 - macOS: `brew install e2fsprogs`
@@ -222,18 +222,18 @@ On macOS, add to PATH:
 export PATH="/opt/homebrew/opt/e2fsprogs/sbin:$PATH"
 ```
 
-### Build times out / VM doesn't boot
+### Build Times Out / VM Doesn't Boot
 
 Ensure the built architecture matches your host:
 - Apple Silicon Macs: use `aarch64`
 - Intel Macs / x86_64 Linux: use `x86_64`
 
-### Package not found
+### Package Not Found
 
 Alpine packages are split across `main` and `community` repositories. Both are
 enabled by default. Search for packages at https://pkgs.alpinelinux.org/packages
 
-### Image too large
+### Image Too Large
 
 - Remove unnecessary packages from `rootfsPackages`
 - The `linux-virt` kernel is smaller than `linux-lts`

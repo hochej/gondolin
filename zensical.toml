@@ -15,6 +15,11 @@ extra_css = [
     "stylesheets/extra.css",
 ]
 
+# Extra JavaScript (loaded from ./docs)
+extra_javascript = [
+    "javascripts/home-link.js",
+]
+
 # GitHub repository integration (repo link + optional edit/view buttons)
 repo_url = "https://github.com/earendil-works/gondolin"
 
@@ -23,14 +28,14 @@ nav = [
     {"Home" = "index.md"},
     {"Guides" = [
         {"CLI" = "cli.md"},
-        {"SDK (TypeScript)" = "sdk.md"},
+        {"JavaScript SDK" = "sdk.md"},
         {"SSH" = "ssh.md"},
-        {"Debug logging" = "debug.md"},
-        {"Custom images" = "custom-images.md"},
+        {"Debug Logging" = "debug.md"},
+        {"Custom Images" = "custom-images.md"},
     ]},
     {"Architecture" = [
-        {"Security design" = "security.md"},
-        {"Network stack" = "network.md"},
+        {"Security Design" = "security.md"},
+        {"Network Stack" = "network.md"},
         {"QEMU" = "qemu.md"},
     ]},
 ]

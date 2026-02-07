@@ -1,4 +1,4 @@
-# Network stack
+# Network Stack
 
 This document explains Gondolin's network design: what the guest VM sees, what
 the host actually does with that traffic, and which security and policy
@@ -21,7 +21,7 @@ The guest should be treated as adversarial: the host is the enforcement point.
 - Make requests observable and programmable (hooks)
 - Enable secret injection without delivering secret values into the guest
 
-## High-level architecture
+## High-Level Architecture
 
 At a high level, the data path looks like this:
 
@@ -39,7 +39,7 @@ Conceptually:
 - The host speaks "real networking" only for a narrow subset, and otherwise
   drops packets.
 
-## Addressing and "LAN" model
+## Addressing and "LAN" Model
 
 The guest is placed into a small private IPv4 subnet with a host-side "gateway":
 
@@ -54,7 +54,7 @@ The host implements enough LAN behavior for a typical Linux userspace to work:
 
 This is a **virtual** LAN: it is not bridged to the real host network!
 
-## Protocol layers implemented by the host
+## Protocol Layers Implemented by the Host
 
 The host implements a userspace network stack so it can inspect and control all
 traffic:
@@ -70,7 +70,7 @@ traffic:
 Important implication: Gondolin does not rely on "host firewall rules" for
 correctness. The enforcement happens *before* any real host sockets are created.
 
-## DNS handling
+## DNS Handling
 
 DNS exists because it is useful for HTTP clients, but it is intentionally constrained:
 
@@ -79,7 +79,7 @@ DNS exists because it is useful for HTTP clients, but it is intentionally constr
 - There is no goal of being a full-featured recursive resolver (for example,
   caching is not required for correctness).
 
-### DNS and policy
+### DNS and Policy
 
 Even though DNS is available, policy decisions are **not** based on "what the
 guest resolved."  Instead, HTTP policy is enforced by the host using host-side
@@ -88,7 +88,7 @@ resolution at the point a real upstream connection is made.
 This matters for security because it prevents a class of attacks where the guest
 tries to confuse policy via DNS tricks (e.g. DNS rebinding).
 
-## TCP stream classification
+## TCP Stream Classification
 
 For each outbound TCP flow, Gondolin inspects the beginning of the byte stream
 and classifies it:
@@ -106,7 +106,7 @@ Design notes:
 - HTTP `CONNECT` is explicitly denied. This prevents using HTTP as a generic tunnel.
 - Protocol classification is deliberately conservative.
 
-## HTTP bridging
+## HTTP Bridging
 
 For connections classified as HTTP:
 
@@ -129,7 +129,7 @@ For connections classified as TLS, Gondolin performs a controlled MITM:
 4. The host decrypts the HTTP request inside TLS and then repeats the same HTTP
    bridging pipeline as for plain HTTP.
 
-### CA and guest trust
+### CA and Guest Trust
 
 To make this work, the guest must trust the host-generated CA:
 
@@ -137,22 +137,22 @@ To make this work, the guest must trust the host-generated CA:
 - The CA certificate is made available inside the guest so common TLS clients
   (curl, node, python, etc.) will accept MITM certificates.
 
-## Policy enforcement
+## Policy Enforcement
 
 Policy enforcement happens on the host and is designed to be robust against common evasion tricks.
 
-### Allowlist by hostname
+### Allowlist by Hostname
 
 A typical setup uses an allowlist of hostnames (often with `*` wildcards).
 Requests to hosts not on the allowlist are denied.
 
-### Blocking internal ranges
+### Blocking Internal Ranges
 
 By default, Gondolin blocks connections to internal / local ranges (e.g.
 loopback, RFC1918, link-local, metadata-style targets).  This prevents the guest
 from reaching sensitive services on the host's LAN or cloud metadata endpoints.
 
-### DNS rebinding protection
+### DNS Rebinding Protection
 
 Policy is checked using host-side DNS resolution and is typically validated more than once:
 
@@ -162,12 +162,12 @@ Policy is checked using host-side DNS resolution and is typically validated more
 This closes the common "resolve to public IP at check-time, then to private IP
 at connect-time" rebinding pattern.
 
-### Redirect handling
+### Redirect Handling
 
 Redirects are handled by the host (not blindly followed by the guest's TCP
 stack), and each redirect target is re-validated against policy.
 
-## Hooks and programmability
+## Hooks and Programmability
 
 The network layer exposes hooks so you can:
 
@@ -178,7 +178,7 @@ The network layer exposes hooks so you can:
 A key design principle is that hooks run on the host **after** the traffic has
 been parsed into structured HTTP requests, not on raw packets.
 
-## Secret injection
+## Secret Injection
 
 Secrets are handled as part of the HTTP mediation pipeline:
 
@@ -191,7 +191,7 @@ Secrets are handled as part of the HTTP mediation pipeline:
 This design ensures real secret values never need to exist in the guest's
 memory, environment, or filesystem.
 
-## Buffering and limits
+## Buffering and Limits
 
 To keep the system predictable and bound resource usage, the network layer
 enforces size limits such as:
@@ -203,7 +203,7 @@ enforces size limits such as:
 If you plan to transfer large payloads, design around these limits (e.g. avoid
 large downloads through response hooks).
 
-## Known limitations
+## Known Limitations
 
 The network stack is intentionally *not* a general-purpose internet connection.
 Common limitations include:

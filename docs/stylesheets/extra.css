@@ -80,3 +80,16 @@
 .md-nav__title .md-logo {
   display: none;
 }
+
+/* Make the header site name look like text, but behave like a link */
+header.md-header .md-header__topic > a.md-ellipsis {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+header.md-header .md-header__topic > a.md-ellipsis:hover {
+  text-decoration: underline;
+  text-decoration-color: rgba(28, 27, 26, 0.35);
+  text-underline-offset: 0.12em;
+}

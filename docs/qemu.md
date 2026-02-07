@@ -21,7 +21,7 @@ Alternatives like Firecracker are attractive on Linux, but they do not provide
 the same cross-platform story on macOS, and divergence in VM behavior across
 OSes is a long-term maintenance and security risk.
 
-## What the guest sees
+## What the Guest Sees
 
 From inside the VM, the guest sees familiar devices:
 
@@ -32,7 +32,7 @@ From inside the VM, the guest sees familiar devices:
 The guest experience is intentionally "normal Linux" so that standard tooling
 works without custom kernels or unusual userspace stacks.
 
-## How Gondolin connects to QEMU
+## How Gondolin Connects to QEMU
 
 Gondolin runs QEMU as a child process and connects to it over local transports
 (Unix domain sockets and file descriptors).  The host side is responsible for:
@@ -44,7 +44,7 @@ Gondolin runs QEMU as a child process and connects to it over local transports
 The key design is that Gondolin does not treat QEMU networking as a black box.
 Instead, it positions itself as the network peer of the guest.
 
-## Why we do not use vsock
+## Why We Do Not Use Vsock
 
 It is tempting to use virtio-vsock for host-guest communication, especially for
 control channels.  Gondolin intentionally avoids relying on vsock as the primary
@@ -71,7 +71,7 @@ Instead, Gondolin uses:
 
 This combination is stable, well-understood, and keeps the guest environment conventional.
 
-## Networking: why a custom backend
+## Networking: Why a Custom Backend
 
 Gondolin does not connect the guest to the host network via a generic NAT or a
 bridged tap device. Instead, the host is the guest's network peer.
@@ -89,7 +89,7 @@ is the opposite of the threat model.
 
 For details of the mediation pipeline, see [Network stack](./network.md).
 
-## Control plane: virtio-serial
+## Control Plane: Virtio-Serial
 
 Gondolin uses dedicated virtio-serial ports for host-guest control traffic.
 
@@ -102,7 +102,7 @@ Reasons:
 - Cross-platform stability: virtio-serial is widely supported and behaves
   consistently across macOS and Linux when run under QEMU.
 
-## Making QEMU configuration stable
+## Making QEMU Configuration Stable
 
 Gondolin tries to keep the QEMU device model minimal and predictable:
 
@@ -117,7 +117,7 @@ The exact QEMU flags may evolve over time, but the stability goals are:
 - Consistent device naming in the guest
 - Consistent performance characteristics across supported platforms
 
-## macOS vs Linux differences
+## macOS vs Linux Differences
 
 Gondolin aims for the same guest-visible behavior on macOS and Linux.  The
 primary differences are in the acceleration backend and QEMU machine defaults.
@@ -135,7 +135,7 @@ If hardware acceleration is not available, QEMU can fall back to software
 emulation (TCG).  This is much slower and is not the recommended mode for regular
 use.
 
-### Machine type and CPU model
+### Machine Type and CPU Model
 
 QEMU has different machine models depending on architecture and platform.
 Gondolin selects machine types and CPU models that are supported by the host
@@ -145,7 +145,7 @@ You should generally not rely on a specific QEMU machine type as part of the
 public API. The important guarantee is that the guest boots quickly and exposes
 the expected virtio devices.
 
-### File and socket handling
+### File and Socket Handling
 
 Both platforms use local IPC primitives to connect to QEMU.  The details differ:
 

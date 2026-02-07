@@ -1,13 +1,161 @@
-# Gondolin SDK
+# JavaScript SDK
 
-This document contains the more detailed, programmatic documentation for the
+This section contains the more detailed, programmatic documentation for the
 `@earendil-works/gondolin` TypeScript SDK (VM lifecycle, network policy, VFS,
 asset management, and development notes).
 
-If you're looking for a quick overview + a minimal "hello world", see:
-- [`host/README.md`](../host/README.md)
+The most basic example involves spawning a VM and executing commands:
 
-## Network policy (HTTP allowlists + secret injection)
+```ts
+import { VM } from "@earendil-works/gondolin";
+
+const vm = await VM.create();
+const result = await vm.exec("curl https://example.com/");
+await vm.close();
+```
+## VM Lifecycle & Command Execution
+
+When working with the SDK you always need to create a VM object and destroy it.  If
+you don't, then the QEMU instance hangs around.
+
+### Creating, Starting, and Closing
+
+Most code should use the async factory, which also ensures guest assets are
+available:
+
+```ts
+import { VM } from "@earendil-works/gondolin";
+
+const vm = await VM.create({
+  // set autoStart: false if you want to configure things before boot
+  // autoStart: false,
+});
+
+// Optional: explicit start (VM.create defaults to autoStart: true)
+await vm.start();
+
+// …use the VM…
+await vm.close();
+```
+
+### `vm.exec()`
+
+This is the most common of operations.  it returns an `ExecProcess` (a running
+command handle) which is both:
+
+- **Promise-like**: `await vm.exec(...)` yields an `ExecResult`
+- **Stream-like**: it is an `AsyncIterable` for stdout, and exposes `stdout`/`stderr` streams
+
+Buffered usage (most common):
+
+```ts
+const result = await vm.exec(["sh", "-lc", "echo hello; echo err >&2; exit 7"]);
+
+console.log(result.exitCode); // 7
+console.log(result.ok);       // false
+console.log(result.stdout);   // "hello\n"
+console.log(result.stderr);   // "err\n"
+```
+
+#### What Is in `ExecResult`
+
+An `ExecResult` is **always returned**, even on non-zero exit codes (non-zero
+exit codes do *not* throw).  You typically check:
+
+- `result.exitCode: number`: process exit code
+- `result.signal?: number`: termination signal (if the guest reports one)
+- `result.ok: boolean`: shorthand for `exitCode === 0`
+- `result.stdout: string` / `result.stderr: string`: decoded using `options.encoding` (default: `utf-8`)
+- `result.stdoutBuffer: Buffer` / `result.stderrBuffer: Buffer`: for binary output
+- helpers: `result.json<T>()`, `result.lines()`
+
+#### Streaming Output
+
+You can stream output while the command runs:
+
+```ts
+const proc = vm.exec(["sh", "-lc", "for i in 1 2 3; do echo $i; sleep 1; done"]);
+
+for await (const chunk of proc) {
+  // default async iteration yields stdout chunks as strings
+  process.stdout.write(chunk);
+}
+
+const result = await proc;
+console.log(result.exitCode);
+```
+
+Important detail: when you start streaming via `for await (const … of proc)` (or
+`proc.lines()` / `proc.output()`), Gondolin disables stdout/stderr buffering for
+that exec session to avoid unbounded memory growth.  That means the final
+`ExecResult.stdout` / `stderr` will typically be **empty** in streaming mode.
+
+If you need both streaming *and* to keep a copy of output, capture it yourself
+from the streams:
+
+```ts
+const proc = vm.exec(["echo", "hello"]);
+let stdout = "";
+proc.stdout.on("data", (b) => (stdout += b.toString("utf-8")));
+
+await proc;
+console.log(stdout);
+```
+
+To stream both stdout and stderr with labels, use `proc.output()`:
+
+```ts
+for await (const { stream, text } of vm.exec(["sh", "-lc", "echo out; echo err >&2"]).output()) {
+  process.stdout.write(`[${stream}] ${text}`);
+}
+```
+
+#### Avoiding Large Buffers
+
+For commands that may produce a lot of output, set `buffer: false`:
+
+```ts
+await vm.exec(["cat", "/some/huge/file"], { buffer: false });
+```
+
+You can still stream output, but the resulting `ExecResult` will not include
+buffered stdout/stderr.
+
+#### Cancellation
+
+`ExecOptions.signal` can be used to stop waiting for a command:
+
+```ts
+const ac = new AbortController();
+setTimeout(() => ac.abort(), 1000);
+
+await vm.exec(["sleep", "10"], { signal: ac.signal }); // rejects with "exec aborted"
+```
+
+Note: aborting currently rejects the local promise; it does not (yet) guarantee
+that the guest process is terminated.
+
+### `vm.shell()`
+
+`vm.shell()` is a convenience wrapper around `vm.exec()` for interactive
+sessions (PTY + stdin enabled), optionally attaching to the current terminal.
+
+### `vm.enableSsh()`
+
+For workflows that prefer SSH tooling (scp/rsync/ssh port forwards), you can
+start an `sshd` inside the guest and expose it via a host-local TCP forwarder:
+
+```ts
+const access = await vm.enableSsh();
+console.log(access.command); // ready-to-run ssh command
+
+// ...
+await access.close();
+```
+
+See also: [SSH access](./ssh.md).
+
+## Network Policy
 
 The network stack only allows HTTP and TLS traffic. TCP flows are classified and
 non-HTTP traffic is dropped. Requests are intercepted and replayed via `fetch`
@@ -49,7 +197,7 @@ Notable consequences:
 
 For deeper conceptual background, see [Network stack](./network.md).
 
-## VFS providers
+## VFS Providers
 
 The VM exposes hookable VFS mounts:
 
@@ -80,7 +228,7 @@ const vm = await VM.create({
 > certificates; doing so hides `/etc/ssl/certs` and will cause TLS verification
 > failures (e.g. `curl: (60)`).
 
-## Asset management
+## Image Management
 
 Guest images (kernel, initramfs, rootfs) are automatically downloaded from
 GitHub releases on first use. The default cache location is `~/.cache/gondolin/`.
@@ -108,19 +256,7 @@ const assets = await ensureGuestAssets();
 console.log("Kernel:", assets.kernelPath);
 ```
 
-## Building custom guest images
-
-The full custom image documentation is here:
-- [Building Custom Images](./custom-images.md)
-
-Quick-start reminder:
-
-```bash
-gondolin build --init-config > build-config.json
-# Edit build-config.json to add packages (rust, go, etc.)
-gondolin build --config build-config.json --output ./my-assets
-GONDOLIN_GUEST_DIR=./my-assets gondolin bash
-```
+To build custom image see the documentation is here: [Building Custom Images](./custom-images.md).
 
 Use the custom assets programmatically by pointing `sandbox.imagePath` at the
 asset directory:
@@ -138,6 +274,6 @@ await vm.exec("uname -a");
 await vm.close();
 ```
 
-## Debug logging
+## Debug Logging
 
 See [Debug Logging](./debug.md).
