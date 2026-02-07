@@ -200,10 +200,10 @@ A successful build creates:
 
 ```
 my-assets/
-├── manifest.json        # Build metadata and checksums
-├── vmlinuz-virt         # Linux kernel
-├── initramfs.cpio.lz4   # Compressed initramfs
-└── rootfs.ext4          # Root filesystem image
+  manifest.json        # Build metadata and checksums
+  vmlinuz-virt         # Linux kernel
+  initramfs.cpio.lz4   # Compressed initramfs
+  rootfs.ext4          # Root filesystem image
 ```
 
 The `manifest.json` contains the build configuration, timestamps, and SHA-256
