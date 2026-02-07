@@ -1,13 +1,15 @@
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 
 import { createErrnoError } from "./errors";
-import { VirtualProvider as VirtualProviderBase } from "./node";
 import type { VirtualProvider, VirtualFileHandle } from "./node";
-
-const { errno: ERRNO } = os.constants;
-const VirtualProviderClass = VirtualProviderBase as unknown as { new (...args: any[]): any };
+import {
+  createVirtualDirStats,
+  ERRNO,
+  formatVirtualEntries,
+  normalizeVfsPath,
+  VirtualDirent,
+  VirtualProviderClass,
+} from "./utils";
 
 export class MountRouterProvider extends VirtualProviderClass implements VirtualProvider {
   private readonly mountMap: Map<string, VirtualProvider>;
@@ -281,7 +283,7 @@ export class MountRouterProvider extends VirtualProviderClass implements Virtual
             return await super.realpath(mount.relativePath, options);
           } catch (err) {
             if (isNoEntryError(err)) {
-              return normalizePath(entryPath);
+              return normalizeVfsPath(entryPath);
             }
             throw err;
           }
@@ -293,7 +295,7 @@ export class MountRouterProvider extends VirtualProviderClass implements Virtual
       return super.realpath(mount.relativePath, options);
     }
     this.ensureVirtualDir(entryPath, "realpath");
-    return normalizePath(entryPath);
+    return normalizeVfsPath(entryPath);
   }
 
   realpathSync(entryPath: string, options?: object) {
@@ -309,7 +311,7 @@ export class MountRouterProvider extends VirtualProviderClass implements Virtual
             return super.realpathSync(mount.relativePath, options);
           } catch (err) {
             if (isNoEntryError(err)) {
-              return normalizePath(entryPath);
+              return normalizeVfsPath(entryPath);
             }
             throw err;
           }
@@ -321,7 +323,7 @@ export class MountRouterProvider extends VirtualProviderClass implements Virtual
       return super.realpathSync(mount.relativePath, options);
     }
     this.ensureVirtualDir(entryPath, "realpath");
-    return normalizePath(entryPath);
+    return normalizeVfsPath(entryPath);
   }
 
   async access(entryPath: string, mode?: number) {
@@ -411,7 +413,7 @@ export class MountRouterProvider extends VirtualProviderClass implements Virtual
   }
 
   private resolveMount(entryPath: string) {
-    const normalized = normalizePath(entryPath);
+    const normalized = normalizeVfsPath(entryPath);
     for (const mountPath of this.mountPaths) {
       if (isUnderMountPoint(normalized, mountPath)) {
         const provider = this.mountMap.get(mountPath)!;
@@ -426,7 +428,7 @@ export class MountRouterProvider extends VirtualProviderClass implements Virtual
   }
 
   private virtualChildren(entryPath: string) {
-    const normalized = normalizePath(entryPath);
+    const normalized = normalizeVfsPath(entryPath);
     const prefix = normalized === "/" ? "/" : `${normalized}/`;
     const children = new Set<string>();
 
@@ -469,63 +471,6 @@ export class MountRouterProvider extends VirtualProviderClass implements Virtual
   }
 }
 
-class VirtualDirent {
-  constructor(public readonly name: string) {}
-
-  isFile() {
-    return false;
-  }
-
-  isDirectory() {
-    return true;
-  }
-
-  isSymbolicLink() {
-    return false;
-  }
-
-  isBlockDevice() {
-    return false;
-  }
-
-  isCharacterDevice() {
-    return false;
-  }
-
-  isFIFO() {
-    return false;
-  }
-
-  isSocket() {
-    return false;
-  }
-}
-
-function createVirtualDirStats() {
-  const now = Date.now();
-  const stats = Object.create(fs.Stats.prototype) as fs.Stats;
-  Object.assign(stats, {
-    dev: 0,
-    mode: 0o040755,
-    nlink: 1,
-    uid: 0,
-    gid: 0,
-    rdev: 0,
-    blksize: 4096,
-    ino: 0,
-    size: 4096,
-    blocks: 8,
-    atimeMs: now,
-    mtimeMs: now,
-    ctimeMs: now,
-    birthtimeMs: now,
-    atime: new Date(now),
-    mtime: new Date(now),
-    ctime: new Date(now),
-    birthtime: new Date(now),
-  });
-  return stats;
-}
 
 function mergeEntries(
   entries: Array<string | fs.Dirent>,
@@ -546,10 +491,6 @@ function mergeEntries(
   return dirents;
 }
 
-function formatVirtualEntries(children: string[], withTypes: boolean) {
-  if (!withTypes) return children;
-  return children.map((child) => new VirtualDirent(child) as unknown as fs.Dirent);
-}
 
 function getEntryName(entry: string | fs.Dirent) {
   return typeof entry === "string" ? entry : entry.name;
@@ -577,17 +518,6 @@ function getRelativePath(normalizedPath: string, mountPoint: string) {
   return normalizedPath.slice(mountPoint.length);
 }
 
-function normalizePath(inputPath: string) {
-  let normalized = path.posix.normalize(inputPath);
-  if (!normalized.startsWith("/")) {
-    normalized = `/${normalized}`;
-  }
-  if (normalized.length > 1 && normalized.endsWith("/")) {
-    normalized = normalized.slice(0, -1);
-  }
-  return normalized;
-}
-
 export function normalizeMountPath(inputPath: string) {
   if (typeof inputPath !== "string" || inputPath.length === 0) {
     throw new Error("mount path must be a non-empty string");
@@ -598,7 +528,7 @@ export function normalizeMountPath(inputPath: string) {
   if (inputPath.includes("\0")) {
     throw new Error("mount path contains null bytes");
   }
-  return normalizePath(inputPath);
+  return normalizeVfsPath(inputPath);
 }
 
 export function normalizeMountMap(mounts: Record<string, VirtualProvider>) {

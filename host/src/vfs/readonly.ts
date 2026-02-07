@@ -1,11 +1,6 @@
-import os from "os";
-
 import { createErrnoError } from "./errors";
-import { VirtualProvider as VirtualProviderBase } from "./node";
 import type { VirtualProvider, VirtualFileHandle } from "./node";
-
-const { errno: ERRNO } = os.constants;
-const VirtualProviderClass = VirtualProviderBase as unknown as { new (...args: any[]): any };
+import { ERRNO, isWriteFlag, VirtualProviderClass } from "./utils";
 
 /**
  * Wraps a VirtualProvider and makes it read-only by blocking all write operations.
@@ -176,16 +171,3 @@ export class ReadonlyProvider extends VirtualProviderClass implements VirtualPro
   }
 }
 
-/**
- * Check if the given flag string implies a write operation.
- * Flags like 'w', 'w+', 'a', 'a+', 'r+' all allow writing.
- */
-function isWriteFlag(flags: string): boolean {
-  // 'w' - write only, create/truncate
-  // 'w+' - read and write, create/truncate
-  // 'a' - append only
-  // 'a+' - read and append
-  // 'r+' - read and write
-  // 'wx', 'ax' - exclusive variants
-  return /[wa+]/.test(flags);
-}

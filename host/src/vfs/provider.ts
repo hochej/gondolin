@@ -1,11 +1,6 @@
-import os from "os";
-
 import { createErrnoError } from "./errors";
-import { VirtualProvider as VirtualProviderBase } from "./node";
 import type { VirtualProvider, VirtualFileHandle } from "./node";
-
-const { errno: ERRNO } = os.constants;
-const VirtualProviderClass = VirtualProviderBase as unknown as { new (...args: any[]): any };
+import { ERRNO, VirtualProviderClass } from "./utils";
 
 export type VfsHookContext = {
   /** operation name */
