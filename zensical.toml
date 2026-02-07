@@ -69,6 +69,8 @@ favicon = "images/favicon/favicon.ico"
 features = [
     "content.action.view",
     "content.action.edit",
+    "content.code.copy",
+    "content.code.select",
 ]
 
 [project.theme.icon]
