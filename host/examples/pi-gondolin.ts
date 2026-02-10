@@ -19,7 +19,8 @@
  *   - The VM is started on `session_start` (and lazily if a tool is used before that)
  *   - User `!` commands are also executed inside the VM
  *   - Module resolution happens relative to this file, so keeping it inside the
- *     gondolin repo (or installing `@earendil-works/gondolin` next to it) is easiest
+ *     gondolin repo (or installing `@earendil-works/gondolin` + `@hochej/envwise`
+ *     next to it) is easiest
  */
 
 import path from "node:path";
@@ -36,9 +37,35 @@ import {
 	type WriteOperations,
 } from "@mariozechner/pi-coding-agent";
 
-import { RealFSProvider, VM } from "@earendil-works/gondolin";
+import { RealFSProvider, VM, createHttpHooks } from "@earendil-works/gondolin";
 
 const GUEST_WORKSPACE = "/workspace";
+
+type EnvwiseModule = {
+	classifyEnvForGondolin: (
+		env: Record<string, string | undefined>,
+	) => {
+		secrets: Array<{ name: string }>;
+		dropped: Array<{ name: string }>;
+		safe: string[];
+		secretsMap: Record<string, { hosts: string[]; value: string }>;
+	};
+};
+
+let envwiseModule: Promise<EnvwiseModule> | null = null;
+
+async function loadEnvwise(): Promise<EnvwiseModule> {
+	if (!envwiseModule) {
+		envwiseModule = import("@hochej/envwise") as Promise<EnvwiseModule>;
+	}
+	try {
+		return await envwiseModule;
+	} catch {
+		throw new Error(
+			"This example requires @hochej/envwise. Install it next to this extension (e.g. in gondolin/host: pnpm add @hochej/envwise)",
+		);
+	}
+}
 
 function shQuote(value: string): string {
 	// POSIX shell quoting: wraps in single quotes and escapes internal quotes
@@ -128,8 +155,7 @@ function createGondolinEditOps(vm: VM, localCwd: string): EditOperations {
 	return { readFile: r.readFile, access: r.access, writeFile: w.writeFile };
 }
 
-function sanitizeEnv(env?: NodeJS.ProcessEnv): Record<string, string> | undefined {
-	if (!env) return undefined;
+function toStringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
 	const out: Record<string, string> = {};
 	for (const [k, v] of Object.entries(env)) {
 		if (typeof v === "string") out[k] = v;
@@ -137,9 +163,18 @@ function sanitizeEnv(env?: NodeJS.ProcessEnv): Record<string, string> | undefine
 	return out;
 }
 
+function pickSafeEnv(env: Record<string, string>, safeNames: string[]): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const name of safeNames) {
+		const value = env[name];
+		if (value !== undefined) out[name] = value;
+	}
+	return out;
+}
+
 function createGondolinBashOps(vm: VM, localCwd: string): BashOperations {
 	return {
-		exec: async (command, cwd, { onData, signal, timeout, env }) => {
+		exec: async (command, cwd, { onData, signal, timeout }) => {
 			const guestCwd = toGuestPath(localCwd, cwd);
 
 			const ac = new AbortController();
@@ -160,7 +195,6 @@ function createGondolinBashOps(vm: VM, localCwd: string): BashOperations {
 				const proc = vm.exec(["/bin/bash", "-lc", command], {
 					cwd: guestCwd,
 					signal: ac.signal,
-					env: sanitizeEnv(env),
 					stdout: "pipe",
 					stderr: "pipe",
 				});
@@ -204,7 +238,21 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.theme.fg("accent", `Gondolin: starting (mount ${GUEST_WORKSPACE})`),
 			);
 
+			const hostEnv = toStringEnv(process.env);
+			const { classifyEnvForGondolin } = await loadEnvwise();
+			const classified = classifyEnvForGondolin(hostEnv);
+			const safeEnv = pickSafeEnv(hostEnv, classified.safe);
+			const { httpHooks, env: placeholderEnv } = createHttpHooks({
+				allowedHosts: ["*"],
+				secrets: classified.secretsMap,
+			});
+
 			const created = await VM.create({
+				httpHooks,
+				env: {
+					...safeEnv,
+					...placeholderEnv,
+				},
 				vfs: {
 					mounts: {
 						[GUEST_WORKSPACE]: new RealFSProvider(localCwd),
@@ -217,7 +265,19 @@ export default function (pi: ExtensionAPI) {
 				"gondolin",
 				ctx.ui.theme.fg("accent", `Gondolin: running (${localCwd} -> ${GUEST_WORKSPACE})`),
 			);
-			ctx?.ui.notify(`Gondolin VM ready. Host ${localCwd} mounted at ${GUEST_WORKSPACE}`, "info");
+			ctx?.ui.notify(
+				`Gondolin VM ready. Host ${localCwd} mounted at ${GUEST_WORKSPACE}. ` +
+					`Mapped secrets: ${classified.secrets.length}, dropped secrets: ${classified.dropped.length}, safe vars: ${classified.safe.length}`,
+				"info",
+			);
+			if (classified.dropped.length > 0) {
+				const preview = classified.dropped
+					.slice(0, 10)
+					.map((entry) => entry.name)
+					.join(", ");
+				const extra = classified.dropped.length > 10 ? ` (+${classified.dropped.length - 10} more)` : "";
+				ctx?.ui.notify(`Dropped secret-like env vars (no host mapping): ${preview}${extra}`, "info");
+			}
 			return created;
 		})();
 

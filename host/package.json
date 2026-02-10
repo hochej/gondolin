@@ -44,6 +44,7 @@
   },
   "license": "Apache-2.0",
   "dependencies": {
+    "@hochej/envwise": "^0.1.8",
     "cbor": "^10.0.4",
     "node-forge": "^1.3.3",
     "undici": "^6.21.0"
