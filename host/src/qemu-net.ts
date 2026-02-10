@@ -670,11 +670,28 @@ export class QemuNetworkBackend extends EventEmitter {
     this.server.listen(this.options.socketPath);
   }
 
-  close() {
+  async close(): Promise<void> {
     this.detachSocket();
+
+    if (this.eventLoopDelay) {
+      try {
+        this.eventLoopDelay.disable();
+      } catch {
+        // ignore
+      }
+      this.eventLoopDelay = null;
+    }
+
     if (this.server) {
-      this.server.close();
+      const server = this.server;
       this.server = null;
+      await new Promise<void>((resolve) => {
+        try {
+          server.close(() => resolve());
+        } catch {
+          resolve();
+        }
+      });
     }
   }
 

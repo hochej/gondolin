@@ -286,14 +286,18 @@ async function main() {
     attach.start();
 
     const result = await proc;
-    process.exitCode = result.exitCode;
+    return result.exitCode;
   } finally {
     attach?.stop();
     await vm.close();
   }
 }
 
-main().catch((err) => {
-  console.error("Error:", err);
-  process.exit(1);
-});
+main()
+  .then((code) => {
+    process.exit(code);
+  })
+  .catch((err) => {
+    console.error("Error:", err);
+    process.exit(1);
+  });

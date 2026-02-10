@@ -249,10 +249,10 @@ async function main(): Promise<number> {
 
 main()
   .then((code) => {
-    process.exitCode = code;
+    process.exit(code);
   })
   .catch((err) => {
     const message = err instanceof Error ? err.message : String(err);
     process.stderr.write(`${message}\n`);
-    process.exitCode = 1;
+    process.exit(1);
   });

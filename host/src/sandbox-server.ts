@@ -525,6 +525,7 @@ class VirtioBridge {
   private pendingBytes = 0;
   private waitingDrain = false;
   private allowReconnect = true;
+  private closed = false;
 
   constructor(
     private readonly socketPath: string,
@@ -532,6 +533,7 @@ class VirtioBridge {
   ) {}
 
   connect() {
+    if (this.closed) return;
     if (this.server) return;
     this.allowReconnect = true;
     if (!fs.existsSync(path.dirname(this.socketPath))) {
@@ -557,24 +559,50 @@ class VirtioBridge {
     server.listen(this.socketPath);
   }
 
-  disconnect() {
+  async disconnect(): Promise<void> {
+    this.closed = true;
     this.allowReconnect = false;
+
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+
+    // Always hard-destroy the active socket so `server.close()` can complete
+    // immediately. Using `.end()` can keep the connection (and therefore the
+    // net.Server handle) alive indefinitely if the peer never responds.
     if (this.socket) {
-      this.socket.end();
+      try {
+        this.socket.destroy();
+      } catch {
+        // ignore
+      }
       this.socket = null;
     }
+
     if (this.server) {
-      this.server.close();
+      const server = this.server;
       this.server = null;
+      await new Promise<void>((resolve) => {
+        try {
+          server.close(() => resolve());
+        } catch {
+          resolve();
+        }
+      });
     }
+
     this.waitingDrain = false;
+
+    // Drop any queued frames; after disconnect the bridge is permanently closed.
+    this.pending = [];
+    this.pendingBytes = 0;
   }
 
   send(message: object): boolean {
+    if (this.closed) {
+      return false;
+    }
     if (!this.socket) {
       this.connect();
     }
@@ -1759,23 +1787,35 @@ export class SandboxServer extends EventEmitter {
   private async closeInternal() {
     this.failInflight("server_shutdown", "server is shutting down");
     this.closeAllClients();
-    await this.controller.close();
-    this.bridge.disconnect();
-    this.fsBridge.disconnect();
-    this.sshBridge.disconnect();
-    this.ingressBridge.disconnect();
+
+    // Stop accepting new virtio connections immediately and prevent reconnect
+    // timers from keeping the event loop alive while we wait for QEMU to exit.
+    await Promise.all([
+      this.bridge.disconnect(),
+      this.fsBridge.disconnect(),
+      this.sshBridge.disconnect(),
+      this.ingressBridge.disconnect(),
+    ]);
+
+    // Tear down host-side network + streams promptly. QEMU may still be running
+    // for a short grace period while SandboxController.close() tries SIGTERM.
+    await this.network?.close();
+
     for (const stream of this.tcpStreams.values()) {
       stream.destroy();
     }
     this.tcpStreams.clear();
     this.tcpOpenWaiters.clear();
+
     for (const stream of this.ingressTcpStreams.values()) {
       stream.destroy();
     }
     this.ingressTcpStreams.clear();
     this.ingressTcpOpenWaiters.clear();
+
+    await this.controller.close();
     await this.fsService?.close();
-    this.network?.close();
+
     this.started = false;
   }
 
