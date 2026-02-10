@@ -289,6 +289,69 @@ test("http hooks replace secret placeholders", async () => {
   assert.equal(request.headers.authorization, "Bearer secret-value");
 });
 
+test("http hooks replace secret placeholders in basic auth", async () => {
+  const { httpHooks, env } = createHttpHooks({
+    secrets: {
+      BASIC_USER: {
+        hosts: ["example.com"],
+        value: "alice",
+      },
+      BASIC_PASS: {
+        hosts: ["example.com"],
+        value: "s3cr3t",
+      },
+    },
+  });
+
+  const placeholderToken = Buffer.from(`${env.BASIC_USER}:${env.BASIC_PASS}`, "utf8").toString(
+    "base64"
+  );
+  const expectedToken = Buffer.from("alice:s3cr3t", "utf8").toString("base64");
+
+  const request = await httpHooks.onRequest!({
+    method: "GET",
+    url: "https://example.com/data",
+    headers: {
+      authorization: `Basic ${placeholderToken}`,
+    },
+    body: null,
+  });
+
+  assert.equal(request.headers.authorization, `Basic ${expectedToken}`);
+});
+
+test("http hooks reject basic auth secrets on disallowed hosts", async () => {
+  const { httpHooks, env } = createHttpHooks({
+    secrets: {
+      BASIC_USER: {
+        hosts: ["example.com"],
+        value: "alice",
+      },
+      BASIC_PASS: {
+        hosts: ["example.com"],
+        value: "s3cr3t",
+      },
+    },
+  });
+
+  const placeholderToken = Buffer.from(`${env.BASIC_USER}:${env.BASIC_PASS}`, "utf8").toString(
+    "base64"
+  );
+
+  await assert.rejects(
+    () =>
+      httpHooks.onRequest!({
+        method: "GET",
+        url: "https://example.org/data",
+        headers: {
+          authorization: `Basic ${placeholderToken}`,
+        },
+        body: null,
+      }),
+    (err) => err instanceof HttpRequestBlockedError
+  );
+});
+
 test("http hooks reject secrets on disallowed hosts", async () => {
   const { httpHooks, env } = createHttpHooks({
     secrets: {

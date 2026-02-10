@@ -200,6 +200,10 @@ Gondolin's secret strategy is:
   (`createHttpHooks().httpHooks.onRequest`) scans outbound headers and **replaces
   placeholders with real secret values** *only* if the destination hostname
   matches the secret's host allowlist.
+
+  - This includes `Authorization: Basic …` / `Proxy-Authorization: Basic …`: the
+    base64 token is decoded as `username:password`, placeholders are substituted,
+    and the token is re-encoded.
 - If a placeholder is found but the destination host is not allowed, the request
   is blocked.
 
@@ -322,6 +326,8 @@ These are rules to not compromise the security guarantees of the system:
 2. **Secrets are only substituted in HTTP headers**
     - If you put placeholders in a request body or URL, they will *not* be replaced.
     - Design your client code to pass credentials in headers.
+    - `Authorization: Basic …` is supported: placeholders inside the decoded
+      `username:password` are replaced before the header is sent.
 
 3. **Don't rely on placeholders being "unguessable"**
     - Placeholders are random and not the secret, but the guest can still transmit them.
