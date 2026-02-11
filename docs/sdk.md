@@ -407,6 +407,36 @@ Notable consequences:
 
 For deeper conceptual background, see [Network stack](./network.md).
 
+### Automatic Secret Detection
+
+When forwarding host environment variables into the guest, you can use
+[`@hochej/envwise`](https://github.com/hochej/envwise) to automatically detect secrets
+and wire them through `createHttpHooks`:
+
+```ts
+import { VM, createHttpHooks } from "@earendil-works/gondolin";
+import { classifyEnvForGondolin } from "@hochej/envwise";
+
+const classified = classifyEnvForGondolin(process.env as Record<string, string>);
+
+const { httpHooks, env: placeholderEnv } = createHttpHooks({
+  allowedHosts: ["*"],
+  secrets: classified.secretsMap,
+});
+
+const vm = await VM.create({
+  httpHooks,
+  env: placeholderEnv,
+});
+```
+
+Detected secrets are injected as placeholders and substituted by the host on
+outbound requests to their mapped hosts. Secret-like variables without a known
+host mapping are dropped. Everything else can be forwarded as-is.
+
+See [`host/examples/pi-gondolin.ts`](https://github.com/earendil-works/gondolin/blob/main/host/examples/pi-gondolin.ts)
+for a full integration example.
+
 ## VFS Providers
 
 Gondolin can mount host-backed paths into the guest via programmable VFS
